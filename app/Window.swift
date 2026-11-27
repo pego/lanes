@@ -72,7 +72,10 @@ struct LanesWindow: View {
         .sheet(isPresented: $store.showWelcome) { WelcomeSheet(store: store) }
         .sheet(isPresented: $store.showAdd) {
             AddSheet(existing: store.profiles.map(\.name), routesLinks: store.routeLinks,
-                     initialColor: freeColor) { name, color in store.add(name, color: color) }
+                     initialColor: freeColor,
+                     providers: Providers.all.filter { $0.id == Providers.claude.id || $0.isInstalled }) {
+                store.add($0, color: $1, provider: $2)
+            }
         }
         .confirmationDialog(
             "Remove “\(removing?.name ?? "")”?",
@@ -687,22 +690,28 @@ struct NewLaneRow: View {
 struct AddSheet: View {
     let existing: [String]
     let routesLinks: Bool
-    let create: (String, String) -> Void
+    // The apps a profile can run here: Claude, and ChatGPT when it's
+    // installed. The choice only shows with more than one.
+    let providers: [any Provider]
+    let create: (String, String, String) -> Void   // name, color, provider id
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var colorName: String
+    @State private var providerID = Providers.defaultID
     @FocusState private var nameFocused: Bool
 
     init(existing: [String], routesLinks: Bool, initialColor: String, initialName: String = "",
-         create: @escaping (String, String) -> Void) {
+         providers: [any Provider] = [Providers.claude], create: @escaping (String, String, String) -> Void) {
         self.existing = existing
         self.routesLinks = routesLinks
+        self.providers = providers
         self.create = create
         _colorName = State(initialValue: initialColor)
         _name = State(initialValue: initialName)
     }
 
     private var color: ProfileColor { ProfileColor.named(colorName) }
+    private var provider: any Provider { Providers.named(providerID) }
     private var display: String { profileDisplayName(name) }
 
     private var problem: String? {
@@ -732,12 +741,24 @@ struct AddSheet: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                 }
+                if providers.count > 1 {
+                    VStack(alignment: .leading, spacing: 8) {
+                        SectionLabel("App")
+                        Picker("App", selection: $providerID) {
+                            ForEach(providers, id: \.id) { Text($0.name).tag($0.id) }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                    }
+                }
                 VStack(alignment: .leading, spacing: 8) {
                     SectionLabel("Color")
                     ColorSwatches(selected: colorName, size: 22) { colorName = $0 }
                 }
                 Label {
-                    Text(routesLinks
+                    Text(provider.linkScheme == nil
+                         ? "It starts empty and signs in on its own. Sign-in comes back to the \(provider.name) that started it, so sign in one profile at a time."
+                         : routesLinks
                          ? "It starts empty and signs in on its own. When you log in, Lanes hands the sign-in link back to this profile, even with others open."
                          : "It starts empty and signs in on its own. Before its first sign-in, quit every other Claude: the login link goes to whichever one is running.")
                 } icon: {
@@ -774,9 +795,9 @@ struct AddSheet: View {
             LinearGradient(colors: [color.swatch.opacity(0.42), color.swatch.opacity(0.06)],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
             VStack(spacing: 8) {
-                TintedClaudeIcon(color: color, size: 76)
+                TintedClaudeIcon(color: color, size: 76, provider: provider)
                     .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
-                Text("Claude \(display.isEmpty ? "…" : display)")
+                Text("\(provider.name) \(display.isEmpty ? "…" : display)")
                     .font(.system(size: 16, weight: .semibold))
                     .lineLimit(1)
                 Text("How it shows up in Spotlight and the Dock")
@@ -787,11 +808,12 @@ struct AddSheet: View {
         }
         .frame(height: 180)
         .animation(.easeOut(duration: 0.2), value: colorName)
+        .animation(.easeOut(duration: 0.2), value: providerID)
     }
 
     private func submit() {
         guard canCreate else { return }
-        create(display, colorName)
+        create(display, colorName, providerID)
         dismiss()
     }
 }

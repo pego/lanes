@@ -1,5 +1,5 @@
 #!/bin/zsh
-# lanes — Lanes for Claude: several Claude Desktop accounts side by side
+# lanes — Lanes for Claude: several Claude Desktop (or ChatGPT) accounts side by side
 #
 # Runs multiple Claude Desktop accounts side by side on macOS by giving each
 # profile its own --user-data-dir, and makes each profile launchable from
@@ -74,12 +74,13 @@ info() { print -- "ℹ $*" }
 warn() { print -u2 -- "⚠ $*" }
 
 # ---- providers ---------------------------------------------------------------
-# The desktop app a profile runs. Only Claude so far. A profile names its
+# The desktop app a profile runs: Claude or ChatGPT. A profile names its
 # provider in an optional .lanes-provider file in its folder, next to
-# .lanes-color; a missing or empty one means "claude". The app keeps the
-# same values in app/Provider.swift and app/ClaudeProvider.swift.
+# .lanes-color; a missing or empty one means "claude" (`lanes add --provider`
+# writes one only for another provider). The app keeps the same values in
+# app/Provider.swift, app/ClaudeProvider.swift and app/ChatGPTProvider.swift.
 
-PROVIDERS=(claude)
+PROVIDERS=(claude chatgpt)
 
 # The provider id a profile folder names, whether or not this Lanes knows it.
 provider_of_profile() {
@@ -97,14 +98,42 @@ provider_known() { (( ${PROVIDERS[(Ie)$1]} )) }
 #   executable  Contents/MacOS/<executable>
 #   config_env  the env var pointing it at a profile's private config dir…
 #   config_dir  …and that dir's name inside the profile folder
+#   display     how it's called in prose
+#   icon_style  hue: its icon hue-rotated to the profile color; plate: a
+#               monochrome icon whose plate takes the color
+#   download    where to get it
 provider_value() {
   case "$1:$2" in
-    claude:name)       print -- "Claude" ;;
-    claude:apps)       print -l -- "/Applications/Claude.app" "$HOME/Applications/Claude.app" ;;
-    claude:executable) print -- "Claude" ;;
-    claude:config_env) print -- "CLAUDE_CONFIG_DIR" ;;
-    claude:config_dir) print -- "claude-config" ;;
+    claude:name)        print -- "Claude" ;;
+    claude:apps)        print -l -- "/Applications/Claude.app" "$HOME/Applications/Claude.app" ;;
+    claude:executable)  print -- "Claude" ;;
+    claude:config_env)  print -- "CLAUDE_CONFIG_DIR" ;;
+    claude:config_dir)  print -- "claude-config" ;;
+    claude:display)     print -- "Claude Desktop" ;;
+    claude:icon_style)  print -- "hue" ;;
+    claude:download)    print -- "claude.ai/download" ;;
+    chatgpt:name)       print -- "ChatGPT" ;;
+    chatgpt:apps)       print -l -- "/Applications/ChatGPT.app" "$HOME/Applications/ChatGPT.app" ;;
+    chatgpt:executable) print -- "ChatGPT" ;;
+    chatgpt:config_env) print -- "CODEX_HOME" ;;
+    chatgpt:config_dir) print -- "codex-home" ;;
+    chatgpt:display)    print -- "ChatGPT" ;;
+    chatgpt:icon_style) print -- "plate" ;;
+    chatgpt:download)   print -- "chatgpt.com/download" ;;
     *) err "Unknown provider value '$2' for '$1'." ;;
+  esac
+}
+
+# Environment a provider's clone needs besides its config dir, as NAME=value
+# lines, for the profile folder $2. ChatGPT sets Electron's userData path
+# itself, ignoring --user-data-dir: CODEX_ELECTRON_USER_DATA_PATH moves it
+# (and gives each profile its own single-instance lock). Its clones never
+# update themselves (CODEX_SPARKLE_ENABLED=false): Sparkle would relaunch
+# the clone without its flags, on the default account; it follows the
+# installed app instead (ensure_clone).
+provider_launch_env() {
+  case "$1" in
+    chatgpt) print -l -- "CODEX_ELECTRON_USER_DATA_PATH=$2" "CODEX_SPARKLE_ENABLED=false" ;;
   esac
 }
 
@@ -226,6 +255,7 @@ import CoreImage
 
 // helper tint <src.app|.icns> <dst.icns> <hueDegrees>   hue-rotated copy
 // helper grid <src.app|.icns> <dst.icns>                quartered multi-hue manager icon
+// helper plate <src.app|.icns> <dst.icns> <r> <g> <b>   monochrome icon, plate in that color
 // helper seticon <icon> <target>                   Finder custom icon (Dock honors it,
 //                                                  and it does not break code signatures)
 // helper focus <pid>                               activate a running app by pid
@@ -260,7 +290,7 @@ let iconset = URL(fileURLWithPath: NSTemporaryDirectory())
     .appendingPathComponent("tint-\(ProcessInfo.processInfo.processIdentifier).iconset")
 try! FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
 
-func tintedCG(_ hue: Double, px: Int) -> CGImage? {
+func tintedCG(_ hue: Double, px: Int, plate: [Double]? = nil) -> CGImage? {
     guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: px, pixelsHigh: px,
                                      bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
                                      isPlanar: false, colorSpaceName: .calibratedRGB,
@@ -271,7 +301,17 @@ func tintedCG(_ hue: Double, px: Int) -> CGImage? {
     NSGraphicsContext.restoreGraphicsState()
     guard let ci = CIImage(bitmapImageRep: rep) else { return nil }
     var out = ci
-    if hue != 0 {
+    if let plate, plate.count == 3 {
+        // White times the color is the color; the dark glyph stays dark and
+        // the transparent corners transparent (same as the app's window).
+        let f = CIFilter(name: "CIColorMatrix")!
+        f.setValue(ci, forKey: kCIInputImageKey)
+        f.setValue(CIVector(x: plate[0], y: 0, z: 0, w: 0), forKey: "inputRVector")
+        f.setValue(CIVector(x: 0, y: plate[1], z: 0, w: 0), forKey: "inputGVector")
+        f.setValue(CIVector(x: 0, y: 0, z: plate[2], w: 0), forKey: "inputBVector")
+        guard let o = f.outputImage else { return nil }
+        out = o
+    } else if hue != 0 {
         let f = CIFilter(name: "CIHueAdjust")!
         f.setValue(ci, forKey: kCIInputImageKey)
         f.setValue(hue * .pi / 180, forKey: kCIInputAngleKey)
@@ -310,6 +350,11 @@ func emit(_ size: Int, _ scale: Int) {
             ctx.cgContext.clip(to: rect)
             ctx.cgContext.draw(cg, in: full)
             ctx.cgContext.restoreGState()
+        }
+    } else if mode == "plate" {
+        let rgb = a.dropFirst(4).prefix(3).compactMap(Double.init)
+        if let cg = tintedCG(0, px: px, plate: rgb.count == 3 ? Array(rgb) : [1, 1, 1]) {
+            ctx.cgContext.draw(cg, in: CGRect(x: 0, y: 0, width: px, height: px))
         }
     } else {
         let hue = a.count > 4 ? (Double(a[4]) ?? 0) : 0
@@ -360,18 +405,25 @@ helper_icon() {
     /usr/bin/codesign --force --sign - "${tool:h:h:h}" 2>/dev/null || true
 }
 
-# Writes the profile icon to the given path: Claude's current icon (from the
-# app, not its legacy .icns), hue-rotated when hue != 0. Hue 0 still goes
-# through the helper so orange profiles get the same shape. Without the
-# helper, falls back to the bundle's .icns. Returns 1 if no source icon.
+# Writes the profile icon to the given path: the app's current icon (from
+# the app, not its legacy .icns) in the profile color: Claude's hue-rotated
+# when hue != 0 (hue 0 still goes through the helper so orange profiles get
+# the same shape), ChatGPT's on a plate of the color. Without the helper,
+# falls back to the bundle's .icns. Returns 1 if no source icon.
 make_icns() {
-  local claude_app="$1" hue="$2" out="$3" icns tool
-  if tool=$(ensure_tint_tool) && "$tool" tint "$claude_app" "$out" "$hue" 2>/dev/null; then
-    return 0
+  local app="$1" color="$2" out="$3" provider="${4:-claude}" icns tool hue
+  hue=$(hue_for_color "$color")
+  if tool=$(ensure_tint_tool); then
+    if [[ "$(provider_value "$provider" icon_style)" == plate ]]; then
+      "$tool" plate "$app" "$out" ${=PLATES[$color]:-1 1 1} 2>/dev/null && return 0
+    else
+      "$tool" tint "$app" "$out" "$hue" 2>/dev/null && return 0
+    fi
   fi
-  icns=$(print -l -- "$claude_app/Contents/Resources"/*.icns(N) | head -1)
+  icns=$(print -l -- "$app/Contents/Resources"/*.icns(N) | head -1)
   [[ -n "$icns" ]] || return 1
-  [[ "$hue" != "0" ]] && warn "Could not tint icon (swiftc missing?). Using the plain Claude icon."
+  [[ "$hue" != "0" || "$provider" != claude ]] &&
+    warn "Could not tint icon (swiftc missing?). Using the plain $(provider_value "$provider" name) icon."
   cp "$icns" "$out"
 }
 
@@ -391,6 +443,19 @@ make_manager_icns() {
 hue_for_color() {
   print -- "${HUES[$1]:-0}"
 }
+
+# The same colors as RGB, for a monochrome icon (ChatGPT's): its white plate
+# is multiplied into the color. Mirrors ProfileColor in app/Shared.swift.
+typeset -A PLATES=(
+  orange "0.85 0.47 0.34"
+  red    "0.86 0.34 0.32"
+  yellow "0.80 0.63 0.25"
+  green  "0.36 0.69 0.42"
+  teal   "0.27 0.65 0.62"
+  blue   "0.33 0.56 0.83"
+  purple "0.62 0.47 0.83"
+  pink   "0.83 0.42 0.62"
+)
 
 app_version() {
   /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$1/Contents/Info.plist" 2>/dev/null || print -- "?"
@@ -454,18 +519,23 @@ config_dir_of_profile() {
 # calling shell leaks in; CLAUDE_CONFIG_DIR goes in via --env. -n so a stray
 # of the same bundle (no --user-data-dir) is never just re-activated.
 launch_clone() {
-  local clone="$1" data_dir="$2" cfg provider env exe
+  local clone="$1" data_dir="$2" cfg provider env exe e
+  local -a envs
   cfg=$(config_dir_of_profile "$data_dir")
   provider=$(named_provider_of_profile "$data_dir")
   env=$(provider_value "$provider" config_env)
   exe=$(provider_value "$provider" executable)
+  envs=(--env "$env=$cfg")
+  for e in "${(@f)$(provider_launch_env "$provider" "$data_dir")}"; do
+    [[ -n "$e" ]] && envs+=(--env "$e")
+  done
   # Hard invariant: a clone process must never exist without BOTH its
   # --user-data-dir and its CLAUDE_CONFIG_DIR. Refuse rather than start a
   # process that would fall back to the shared/default identity.
   [[ -n "$data_dir" && -n "$cfg" && -n "$env" ]] || err "Refusing to launch: empty data or config dir."
   [[ -x "$clone/Contents/MacOS/$exe" ]] || err "Refusing to launch: clone binary missing at $clone."
   mkdir -p "$cfg"
-  /usr/bin/open -n -a "$clone" --env "$env=$cfg" \
+  /usr/bin/open -n -a "$clone" "${envs[@]}" \
     --args --user-data-dir="$data_dir"
 }
 
@@ -507,10 +577,10 @@ adopt_strays() {
 # metadata — the Developer ID signature stays valid, which is the entire
 # reason clones are safe: Keychain keeps trusting the app.
 apply_clone_icon() {
-  local claude_app="$1" clone="$2" color="$3" tool tmp
+  local claude_app="$1" clone="$2" color="$3" provider="${4:-claude}" tool tmp
   tool=$(ensure_tint_tool) || return 0
   tmp=$(mktemp -d)
-  if make_icns "$claude_app" "$(hue_for_color "$color")" "$tmp/icon.icns"; then
+  if make_icns "$claude_app" "$color" "$tmp/icon.icns" "$provider"; then
     "$tool" seticon "$tmp/icon.icns" "$clone" 2>/dev/null || true
   fi
   rm -rf "$tmp"
@@ -527,7 +597,7 @@ apply_clone_icon() {
 #     self-update wiped its icon  -> re-clone (reclaim APFS sharing + recolor)
 #   - clone ahead of original     -> leave the newer bundle, just restore icon
 ensure_clone() {
-  local claude_app="$1" clone="$2" color="$3"
+  local claude_app="$1" clone="$2" color="$3" provider="${4:-claude}"
   local ov cv reclone=0
   ov=$(app_version "$claude_app")
   cv=$(app_version "$clone")
@@ -545,7 +615,7 @@ ensure_clone() {
   # would fail file by file and the launch would die silently.
   if [[ -d "$clone" ]] && { (( reclone )) || { [[ "$color" != "orange" ]] && ! has_custom_icon "$clone" } }; then
     [[ -z "$(find "$clone" ! -user "$USER" -print -quit 2>/dev/null)" ]] ||
-      err "Profile app clone is not owned by you (Claude's updater ran as root). Fix: sudo rm -rf '$clone'"
+      err "Profile app clone is not owned by you ($(provider_value "$provider" name)'s updater ran as root). Fix: sudo rm -rf '$clone'"
   fi
 
   if (( reclone )); then
@@ -553,11 +623,11 @@ ensure_clone() {
     rm -rf "$clone"
     mkdir -p "${clone:h}"
     /bin/cp -Rc "$claude_app" "$clone" 2>/dev/null || /bin/cp -R "$claude_app" "$clone"
-    apply_clone_icon "$claude_app" "$clone" "$color"
+    apply_clone_icon "$claude_app" "$clone" "$color" "$provider"
   elif [[ "$color" != "orange" ]] && ! has_custom_icon "$clone"; then
     # Clone is at/ahead of /Applications (self-updated) — keep the newer bundle
     # intact and only restore the color the update dropped.
-    apply_clone_icon "$claude_app" "$clone" "$color"
+    apply_clone_icon "$claude_app" "$clone" "$color" "$provider"
   fi
 }
 
@@ -568,12 +638,13 @@ color_of_profile() {
 }
 
 # Compile an AppleScript source file into a .app with our bundle id and the
-# Claude icon (optionally hue-tinted), replacing any existing bundle.
-# --stay-open builds a stay-open applet (persistent Dock tile).
+# app's icon in the profile color (default: orange, Claude's own), replacing
+# any existing bundle. --stay-open builds a stay-open applet (persistent
+# Dock tile).
 compile_launcher() {
-  local src="$1" app_path="$2" bundle_id="$3" claude_app="$4" hue="${5:-0}"
+  local src="$1" app_path="$2" bundle_id="$3" claude_app="$4" color="${5:-orange}" provider="${6:-claude}"
   local -a osaflags=()
-  [[ "${6:-}" == "--stay-open" ]] && osaflags+=(-s)
+  [[ "${7:-}" == "--stay-open" ]] && osaflags+=(-s)
 
   [[ -d "$app_path" ]] && rm -rf "$app_path"
   mkdir -p "${app_path:h}"
@@ -590,9 +661,9 @@ compile_launcher() {
   rm -f "$app_path/Contents/Resources/Assets.car"
   /usr/libexec/PlistBuddy -c "Delete :CFBundleIconName" "$plist" 2>/dev/null || true
 
-  # Reuse Claude's own icon so the launcher is recognizable in Spotlight/Dock.
+  # Reuse the app's own icon so the launcher is recognizable in Spotlight/Dock.
   if [[ -f "$app_path/Contents/Resources/applet.icns" ]]; then
-    make_icns "$claude_app" "$hue" "$app_path/Contents/Resources/applet.icns" || true
+    make_icns "$claude_app" "$color" "$app_path/Contents/Resources/applet.icns" "$provider" || true
     /usr/bin/touch "$app_path"
   fi
 
@@ -622,7 +693,7 @@ rebuild_chooser_unless_nested() {
 # already-running instance, then the applet exits. stderr stays attached so
 # a failed launch surfaces as an alert instead of dying silently.
 build_launcher() {
-  local slug="$1" display="$2" color="$3" claude_app="$4" tmp app_path
+  local slug="$1" display="$2" color="$3" claude_app="$4" provider="${5:-claude}" tmp app_path
   app_path=$(launcher_of_profile "$display")
   tmp=$(mktemp -d)
   cat > "$tmp/launcher.applescript" <<EOF
@@ -634,7 +705,7 @@ on run
 	end try
 end run
 EOF
-  compile_launcher "$tmp/launcher.applescript" "$app_path" "$BUNDLE_PREFIX.profile.$slug" "$claude_app" "$(hue_for_color "$color")"
+  compile_launcher "$tmp/launcher.applescript" "$app_path" "$BUNDLE_PREFIX.profile.$slug" "$claude_app" "$color" "$provider"
   rm -rf "$tmp"
 
   # Bundle lanes so the launcher drives the same launch path as the GUI and
@@ -658,13 +729,15 @@ bundle_script() {
 # an old copy behind. Launchers whose profile has no launcher (removed with
 # --keep-data) stay removed.
 sync_install() {
-  local d display
+  local d display provider app
   find_claude_app >/dev/null
   for d in "$PROFILES_DIR"/*(N/); do
     display="${d:t}"
     [[ -d "$(launcher_of_profile "$display")" ]] || continue
-    build_launcher "$(slugify "$display")" "$display" "$(color_of_profile "$d")" \
-      "$(find_provider_app "$(named_provider_of_profile "$d")")"
+    provider=$(named_provider_of_profile "$d")
+    # Another app gone (uninstalled ChatGPT) leaves its launchers as they are.
+    app=$(find_provider_app "$provider" 2>/dev/null) || { warn "$(provider_value "$provider" name).app not found; '$display' launcher left as it is."; continue }
+    build_launcher "$(slugify "$display")" "$display" "$(color_of_profile "$d")" "$app" "$provider"
   done
   install_watchdog --quiet --restart
   # Pre-bundle helper binary: a TCC-denied anonymous "tinticon".
@@ -675,16 +748,33 @@ sync_install() {
 # ---- commands ---------------------------------------------------------------
 
 cmd_add() {
-  local raw="${1:-}" color=""
-  [[ -n "$raw" ]] || err "Usage: lanes add <name> [--color <color>]   (e.g. lanes add personal --color blue)"
-  [[ "${2:-}" == "--color" && -n "${3:-}" ]] && color="$3"
-  local slug display data_dir app_path claude_app
+  local raw="${1:-}" color="" want=""
+  local usage="Usage: lanes add <name> [--color <color>] [--provider claude|chatgpt]   (e.g. lanes add personal --color blue)"
+  [[ -n "$raw" ]] || err "$usage"
+  shift
+  while (( $# )); do
+    case "$1" in
+      --color)    [[ -n "${2:-}" ]] || err "$usage"; color="$2"; shift 2 ;;
+      --provider) [[ -n "${2:-}" ]] || err "$usage"; want="$2"; shift 2 ;;
+      *) err "$usage" ;;
+    esac
+  done
+  local slug display data_dir app_path claude_app provider
   slug=$(slugify "$raw")
   [[ -n "$slug" ]] || err "Name must contain at least one letter or digit."
   display=$(displayify "$slug")
   data_dir="$PROFILES_DIR/$display"
-  app_path=$(launcher_of_profile "$display")
-  claude_app=$(find_provider_app "$(named_provider_of_profile "$data_dir")")
+  # A profile keeps the app it was made for: its data folder is that app's.
+  provider=$(provider_of_profile "$data_dir")
+  if [[ -n "$want" ]]; then
+    provider_known "$want" || err "Unknown provider '$want'. Available: ${PROVIDERS}"
+    [[ ! -d "$data_dir" || "$want" == "$provider" ]] ||
+      err "Profile '$display' runs $(provider_value "$(named_provider_of_profile "$data_dir")" name); a profile's app can't change. Pick another name."
+    provider="$want"
+  fi
+  provider_known "$provider" ||
+    err "Profile '$display' runs '$provider', which this version of Lanes can't set up. Update Lanes: lanes update"
+  claude_app=$(find_provider_app "$provider")
 
   # An existing data folder means this is a rebuild, not a new profile. It
   # doesn't prove sign-in ever finished; good enough to skip the login hint.
@@ -697,8 +787,10 @@ cmd_add() {
   [[ -z "$color" ]] && color=$(color_of_profile "$data_dir")
   [[ -n "${HUES[$color]+x}" ]] || err "Unknown color '$color'. Available: ${(k)HUES}"
   print -- "$color" > "$data_dir/.lanes-color"
+  [[ "$provider" == claude ]] || print -- "$provider" > "$data_dir/.lanes-provider"
+  app_path=$(launcher_of_profile "$display")
 
-  build_launcher "$slug" "$display" "$color" "$claude_app"
+  build_launcher "$slug" "$display" "$color" "$claude_app" "$provider"
 
   if (( existed )); then
     ok "Profile '$display' updated (color: $color)."
@@ -707,7 +799,11 @@ cmd_add() {
   fi
   info "Data folder:  $data_dir"
   info "Launcher:     $app_path  (Spotlight: '${${app_path:t}%.app}')"
-  if (( ! existed )); then
+  if (( ! existed )) && [[ "$provider" != claude ]]; then
+    print
+    info "First launch: open the launcher and sign in. Sign-in comes back to the"
+    info "$(provider_value "$provider" name) that started it; sign in one profile at a time."
+  elif (( ! existed )); then
     print
     info "First launch: with the Lanes app running, just open the launcher"
     info "and sign in; it sends the claude:// login link to the right profile. Without"
@@ -859,7 +955,7 @@ launch_profile() {
     return 0
   fi
 
-  ensure_clone "$claude_app" "$clone" "$color"
+  ensure_clone "$claude_app" "$clone" "$color" "$provider"
   launch_clone "$clone" "$data_dir"
 }
 
@@ -933,6 +1029,8 @@ cmd_claude() {
   fi
   local data_dir="$PROFILES_DIR/$display" cfg
   [[ -d "$data_dir" ]] || err "Profile '$display' not found. Create it with: lanes add $raw"
+  [[ "$(provider_of_profile "$data_dir")" == claude ]] ||
+    err "Profile '$display' runs $(provider_value "$(named_provider_of_profile "$data_dir")" name), not Claude: lanes claude runs Claude Code on Claude profiles only."
   # Claude Code's config dir, the one the profile's Claude Desktop uses.
   cfg="$data_dir/$(provider_value claude config_dir)"
   mkdir -p "$cfg"
@@ -978,6 +1076,8 @@ cmd_statusline() {
   for d in "${(@f)$(profile_dirs)}"; do
     [[ -n "$d" ]] || continue
     name=${d:t}
+    # Claude Code's status line: Claude profiles only.
+    [[ "$(provider_of_profile "$d")" == claude ]] || continue
     (( ! $#want )) || (( ${want[(Ie)$name]} )) || continue
     [[ "$mode" == on ]] && mkdir -p "$(config_dir_of_profile "$d")"
     pairs+=("$name" "$(config_dir_of_profile "$d")")
@@ -1493,13 +1593,15 @@ cmd_color() {
   data_dir="$PROFILES_DIR/$display"
   app_path=$(launcher_of_profile "$display")
   [[ -d "$data_dir" ]] || err "Profile '$display' not found."
-  claude_app=$(find_provider_app "$(named_provider_of_profile "$data_dir")")
+  local provider
+  provider=$(named_provider_of_profile "$data_dir")
+  claude_app=$(find_provider_app "$provider")
 
   print -- "$color" > "$data_dir/.lanes-color"
   ok "Color for '$display' set to $color."
 
   if [[ -f "$app_path/Contents/Resources/applet.icns" ]]; then
-    make_icns "$claude_app" "$(hue_for_color "$color")" "$app_path/Contents/Resources/applet.icns" || true
+    make_icns "$claude_app" "$color" "$app_path/Contents/Resources/applet.icns" "$provider" || true
     /usr/bin/codesign --force --sign - "$app_path" 2>/dev/null || true
     /usr/bin/touch "$app_path"
     ok "Launcher icon updated. (Finder/Dock may take a moment to refresh.)"
@@ -1510,7 +1612,7 @@ cmd_color() {
   local clone
   clone=$(clone_of_profile "$display")
   if [[ -d "$clone" ]]; then
-    apply_clone_icon "$claude_app" "$clone" "$color"
+    apply_clone_icon "$claude_app" "$clone" "$color" "$provider"
     ok "Profile app icon updated. (Takes effect on next launch if running.)"
   fi
 }
@@ -1808,6 +1910,20 @@ cmd_doctor() {
   else
     row fail claude "Claude Desktop isn't installed" "Install it from claude.ai/download into Applications." download-claude
   fi
+  # Every other app a profile runs, and the version its clones follow.
+  typeset -A installed_of=(claude "$installed")
+  local p papp pname pv
+  for p in ${PROVIDERS:#claude}; do
+    [[ -n "$(for a in "$PROFILES_DIR"/*(N/); do [[ "$(provider_of_profile "$a")" == "$p" ]] && print x; done)" ]] || continue
+    pname=$(provider_value "$p" display)
+    if papp=$(find_provider_app "$p" 2>/dev/null); then
+      pv=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$papp/Contents/Info.plist" 2>/dev/null || true)
+      installed_of[$p]="$pv"
+      row ok "$p" "$pname is installed" "${pv:+Version $pv, }$papp"
+    else
+      row fail "$p" "$pname isn't installed" "Install it from $(provider_value "$p" download) into Applications." "download-$p"
+    fi
+  done
 
   # The Lanes app, its setup for this version, and whether it's running.
   local app="" stamp_want=""
@@ -1866,8 +1982,9 @@ cmd_doctor() {
     clone=$(clone_of_profile "$name")
     [[ -f "$clone/Contents/Info.plist" ]] &&
       v=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$clone/Contents/Info.plist" 2>/dev/null || true)
-    if [[ -n "$v" && -n "$installed" ]] && version_lt "$v" "$installed"; then
-      row warn "clone:$name" "$name runs Claude $v" "Claude $installed is installed; $name catches up the next time it starts."
+    p=$(named_provider_of_profile "$d") pname=$(provider_value "$p" name) pv="${installed_of[$p]:-}"
+    if [[ -n "$v" && -n "$pv" ]] && version_lt "$v" "$pv"; then
+      row warn "clone:$name" "$name runs $pname $v" "$pname $pv is installed; $name catches up the next time it starts."
     fi
   done
   for name in "${(@ko)uerr}"; do
@@ -1985,12 +2102,17 @@ cmd_help() {
 lanes — every Claude account in its own lane
 
 PROFILES
-  lanes add <name> [--color <c>]   Create a profile and its Spotlight launcher
-                                   (lanes add "client acme" makes "Client Acme")
+  lanes add <name> [--color <c>] [--provider chatgpt]
+                                   Create a profile and its Spotlight launcher
+                                   (lanes add "client acme" makes "Client Acme");
+                                   --provider chatgpt: a ChatGPT profile
   lanes launch <name>              Launch it, or bring it forward if running
-  lanes launch --best              Launch the profile with the most 5-hour room
-  lanes claude <name> [-- <args>]  Run Claude Code in this terminal on the profile's
-                                   own config (--best: the one with the most room)
+  lanes launch --best [--provider chatgpt]
+                                   Launch the Claude (or ChatGPT) profile with the
+                                   most 5-hour room
+  lanes claude <name> [-- <args>]  Run Claude Code in this terminal on the Claude
+                                   profile's own config (--best: the one with the
+                                   most room)
   lanes list                       Profiles and launcher health
   lanes color <name> <c>           Recolor its Dock tile and launcher
                                    (orange red yellow green teal blue purple pink)
@@ -2022,7 +2144,8 @@ MAINTENANCE
   lanes version | help
 
 Profiles live in ~/Library/Application Support/Lanes/profiles/<Name>, each with
-its own Claude Code config in claude-config/. Launchers live in ~/Applications.
+its own Claude Code config in claude-config/ (a ChatGPT profile: its Codex home
+in codex-home/). Launchers live in ~/Applications.
 EOF
 }
 

@@ -21,7 +21,7 @@ struct HealthCheck: Identifiable, Equatable {
         guard let fix else { return nil }
         switch fix {
         case "setup", "watchdog": return "Fix"
-        case "download-claude": return "Download"
+        case _ where fix.hasPrefix("download-"): return "Download"
         case "notifications-ask": return "Allow"
         case "notifications-settings": return "Open Settings"
         case "retry-keychain": return "Try Again"
@@ -132,7 +132,9 @@ extension ProfileStore {
         switch action {
         case "setup": runLanes(["setup"])
         case "watchdog": runLanes(["watchdog", "install"])
-        case "download-claude": NSWorkspace.shared.open(Providers.claude.downloadURL)
+        case _ where action.hasPrefix("download-"):
+            // "download-claude", "download-chatgpt": lanes doctor's row for an app that isn't installed.
+            if let p = Providers.all.first(where: { "download-\($0.id)" == action }) { NSWorkspace.shared.open(p.downloadURL) }
         case "notifications-ask": Notifier.shared.setUp()
         case "notifications-settings":
             let id = Bundle.main.bundleIdentifier ?? ""

@@ -5,8 +5,9 @@
 // app's scenes. The store's other jobs live in Store+Usage.swift (refreshing
 // and publishing usage), Store+Alerts.swift, Store+Updates.swift and
 // Store+Links.swift (claude:// routing). Provider.swift describes the apps a
-// profile can run (only Claude, in ClaudeProvider.swift, which also reads
-// usage from claude.ai), Usage.swift holds usage as Lanes keeps it,
+// profile can run: Claude (ClaudeProvider.swift, which also reads usage
+// from claude.ai) and ChatGPT (ChatGPTProvider.swift, usage from
+// chatgpt.com). Usage.swift holds usage as Lanes keeps it,
 // History.swift keeps it and forecasts it, System.swift holds the
 // system glue. The views live in Window.swift, MenuBar.swift, Settings.swift
 // and Components.swift.
@@ -309,8 +310,8 @@ final class ProfileStore: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { self.refreshRunning() }
     }
 
-    func add(_ name: String, color: String) {
-        callCdp(["add", name, "--color", color])
+    func add(_ name: String, color: String, provider: String = Providers.defaultID) {
+        callCdp(["add", name, "--color", color] + (provider == Providers.defaultID ? [] : ["--provider", provider]))
     }
 
     func setColor(_ p: Profile, color: String) {

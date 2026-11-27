@@ -6,30 +6,32 @@ import SwiftUI
 import AppKit
 import CoreImage
 
-// The app's own icon, hue-shifted to the profile's color with the same
-// CIHueAdjust the helper uses for the Dock tiles and launchers, so the
-// window shows exactly the icon you'll find in the Dock. Only the hueShift
-// icon style exists so far (see IconStyle).
+// The app's own icon in the profile's color, made the way the helper makes
+// the Dock tiles and launchers, so the window shows exactly the icon you'll
+// find in the Dock: Claude's hue-shifted (CIHueAdjust), ChatGPT's monochrome
+// one on a plate of the color (see IconStyle).
 struct TintedClaudeIcon: View {
     let color: ProfileColor
     var size: CGFloat = 40
     var provider: any Provider = Providers.claude
 
     var body: some View {
-        Image(nsImage: tintedIcon(provider.icon, hue: color.hue))
+        Image(nsImage: tintedIcon(provider.icon, color: color, style: provider.iconStyle))
             .resizable()
             .interpolation(.high)
             .frame(width: size, height: size)
     }
 }
 
-private var tintCache: [ObjectIdentifier: [Double: NSImage]] = [:]
+private var tintCache: [ObjectIdentifier: [String: NSImage]] = [:]
 
-func tintedIcon(_ icon: NSImage, hue: Double) -> NSImage {
-    if let hit = tintCache[ObjectIdentifier(icon)]?[hue] { return hit }
+func tintedIcon(_ icon: NSImage, color: ProfileColor, style: IconStyle) -> NSImage {
+    let key = "\(style)-\(color.hue)-\(color.r)-\(color.g)-\(color.b)"
+    if let hit = tintCache[ObjectIdentifier(icon)]?[key] { return hit }
     let px = 256
-    guard hue != 0,
-          let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: px, pixelsHigh: px,
+    // Claude's own orange is hue 0: its icon as it is.
+    if style == .hueShift && color.hue == 0 { return icon }
+    guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: px, pixelsHigh: px,
                                      bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                      colorSpaceName: .calibratedRGB, bytesPerRow: 0, bitsPerPixel: 0)
     else { return icon }
@@ -37,14 +39,27 @@ func tintedIcon(_ icon: NSImage, hue: Double) -> NSImage {
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
     icon.draw(in: CGRect(x: 0, y: 0, width: px, height: px))
     NSGraphicsContext.restoreGraphicsState()
-    guard let ci = CIImage(bitmapImageRep: rep), let f = CIFilter(name: "CIHueAdjust") else { return icon }
+    guard let ci = CIImage(bitmapImageRep: rep) else { return icon }
+    let f: CIFilter?
+    switch style {
+    case .hueShift:
+        f = CIFilter(name: "CIHueAdjust")
+        f?.setValue(color.hue * .pi / 180, forKey: kCIInputAngleKey)
+    case .tintedPlate:
+        // Multiplies the white plate into the color; the dark glyph stays
+        // dark and the transparent corners stay transparent.
+        f = CIFilter(name: "CIColorMatrix")
+        f?.setValue(CIVector(x: color.r, y: 0, z: 0, w: 0), forKey: "inputRVector")
+        f?.setValue(CIVector(x: 0, y: color.g, z: 0, w: 0), forKey: "inputGVector")
+        f?.setValue(CIVector(x: 0, y: 0, z: color.b, w: 0), forKey: "inputBVector")
+    }
+    guard let f else { return icon }
     f.setValue(ci, forKey: kCIInputImageKey)
-    f.setValue(hue * .pi / 180, forKey: kCIInputAngleKey)
     guard let out = f.outputImage,
           let cg = CIContext().createCGImage(out, from: CGRect(x: 0, y: 0, width: px, height: px))
     else { return icon }
     let img = NSImage(cgImage: cg, size: NSSize(width: px, height: px))
-    tintCache[ObjectIdentifier(icon), default: [:]][hue] = img
+    tintCache[ObjectIdentifier(icon), default: [:]][key] = img
     return img
 }
 

@@ -35,7 +35,7 @@ enum Snapshots {
                 write(framed(panel, radius: 14, trafficLights: false, dark: dark), to: "\(out)/menu-\(suffix).png")
 
                 let sheet = render(AddSheet(existing: store.profiles.map(\.name), routesLinks: true,
-                                            initialColor: "pink", initialName: "client acme") { _, _ in }
+                                            initialColor: "pink", initialName: "client acme") { _, _, _ in }
                                     .background(Color(nsColor: .windowBackgroundColor)),
                                    size: nil, appearance: appearance)
                 write(framed(sheet, radius: 12, trafficLights: false, dark: dark), to: "\(out)/new-profile-\(suffix).png")

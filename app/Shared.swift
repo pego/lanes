@@ -20,23 +20,26 @@ enum Brand {
     static let azure = adaptive(light: (0x1E, 0x88, 0xD6), dark: (0x88, 0xDC, 0xFF))
 }
 
-// Mirrors the HUES palette in bin/lanes — names must stay in sync.
+// Mirrors the HUES and PLATES palettes in bin/lanes — names must stay in sync.
 struct ProfileColor: Identifiable, Hashable {
     let name: String
     let hue: Double        // degrees of hue rotation applied to Claude's icon
-    let swatch: Color      // matching UI accent
+    // The matching UI accent, which is also the plate color of a monochrome
+    // icon (ChatGPT's; see IconStyle).
+    let r: Double, g: Double, b: Double
 
     var id: String { name }
+    var swatch: Color { Color(red: r, green: g, blue: b) }
 
     static let all: [ProfileColor] = [
-        ProfileColor(name: "orange", hue: 0,   swatch: Color(red: 0.85, green: 0.47, blue: 0.34)),
-        ProfileColor(name: "red",    hue: -25, swatch: Color(red: 0.86, green: 0.34, blue: 0.32)),
-        ProfileColor(name: "yellow", hue: 40,  swatch: Color(red: 0.80, green: 0.63, blue: 0.25)),
-        ProfileColor(name: "green",  hue: 110, swatch: Color(red: 0.36, green: 0.69, blue: 0.42)),
-        ProfileColor(name: "teal",   hue: 160, swatch: Color(red: 0.27, green: 0.65, blue: 0.62)),
-        ProfileColor(name: "blue",   hue: 200, swatch: Color(red: 0.33, green: 0.56, blue: 0.83)),
-        ProfileColor(name: "purple", hue: 250, swatch: Color(red: 0.62, green: 0.47, blue: 0.83)),
-        ProfileColor(name: "pink",   hue: 310, swatch: Color(red: 0.83, green: 0.42, blue: 0.62)),
+        ProfileColor(name: "orange", hue: 0,   r: 0.85, g: 0.47, b: 0.34),
+        ProfileColor(name: "red",    hue: -25, r: 0.86, g: 0.34, b: 0.32),
+        ProfileColor(name: "yellow", hue: 40,  r: 0.80, g: 0.63, b: 0.25),
+        ProfileColor(name: "green",  hue: 110, r: 0.36, g: 0.69, b: 0.42),
+        ProfileColor(name: "teal",   hue: 160, r: 0.27, g: 0.65, b: 0.62),
+        ProfileColor(name: "blue",   hue: 200, r: 0.33, g: 0.56, b: 0.83),
+        ProfileColor(name: "purple", hue: 250, r: 0.62, g: 0.47, b: 0.83),
+        ProfileColor(name: "pink",   hue: 310, r: 0.83, g: 0.42, b: 0.62),
     ]
 
     static func named(_ name: String) -> ProfileColor {
