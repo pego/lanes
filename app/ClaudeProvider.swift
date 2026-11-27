@@ -23,6 +23,7 @@ struct ClaudeProvider: Provider {
     let usageService = "claude.ai"
     let keychainItem: String? = "Claude Safe Storage"
     let downloadURL = URL(string: "https://claude.ai/download")!
+    let renewsSignIn = false
 
     func fetchUsage(dataDir: String) async throws -> Usage { try await fetchClaudeUsage(dataDir: dataDir) }
     func localUsage(dataDir: String) -> LocalReading? { LocalUsage.latest(dataDir: dataDir) }

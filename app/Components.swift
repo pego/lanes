@@ -203,11 +203,14 @@ struct LaneNote: View {
             if let usage {
                 Image(systemName: symbol(usage))
                 // With the button beside it, the note can be short.
-                Text(usage.needsSignIn && signIn != nil ? (usage.error == "session expired" ? "Signed out" : "Not signed in")
+                // An app that renews its own sign-in only needs opening.
+                let renews = usage.error == "session expired" && provider.renewsSignIn
+                Text(usage.needsSignIn && signIn != nil
+                     ? (renews ? "Sign-in expired" : usage.error == "session expired" ? "Signed out" : "Not signed in")
                      : text(usage))
                     .help(why(usage))
                 if usage.needsSignIn, let signIn {
-                    noteButton("Open and sign in", action: signIn)
+                    noteButton(renews ? "Open" : "Open and sign in", action: signIn)
                 } else if usage.error != nil, let retry {
                     noteButton("Try again", action: retry)
                 }
@@ -245,7 +248,9 @@ struct LaneNote: View {
         let service = provider.usageService, app = provider.name
         if u.needsSignIn {
             return e == "session expired"
-                ? "\(service) signed this profile out. Open it and sign in again to see its usage."
+                ? (provider.renewsSignIn
+                   ? "This profile's \(app) sign-in needs renewing, which \(app) does when it runs. Open it (and sign in if it asks) to see its usage."
+                   : "\(service) signed this profile out. Open it and sign in again to see its usage.")
                 : "This profile isn't signed in to \(app) yet. Open it and sign in to see its usage."
         }
         if e == "no Keychain access" {

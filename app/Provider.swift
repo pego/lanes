@@ -53,6 +53,9 @@ protocol Provider {
     var keychainItem: String? { get }
     // Where to get the app when it isn't installed.
     var downloadURL: URL { get }
+    // An expired sign-in usually renews itself once the app runs (a token
+    // the app refreshes), rather than needing the user to sign in again.
+    var renewsSignIn: Bool { get }
 
     // The profile's usage, from the service. Throws when it can't be read.
     func fetchUsage(dataDir: String) async throws -> Usage

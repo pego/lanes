@@ -383,6 +383,8 @@ enum UnitTests {
             equal(g.appCandidates, ["/Applications/ChatGPT.app", NSHomeDirectory() + "/Applications/ChatGPT.app"])
             equal(g.clonePath(in: "/c", profile: "Work"), "/c/ChatGPT Work.app")
             expect(g.updater == .sparkle && g.iconStyle == .tintedPlate)
+            // An expired ChatGPT sign-in renews once the app runs; Claude's doesn't.
+            expect(g.renewsSignIn && !Providers.claude.renewsSignIn)
             // Its processes and Claude's are told apart; helpers and the
             // bundled codex CLI aren't main processes.
             let clone = "/x/apps/ChatGPT Work.app/Contents/MacOS/ChatGPT --user-data-dir=/x/profiles/Work"

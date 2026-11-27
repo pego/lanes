@@ -34,6 +34,9 @@ struct ChatGPTProvider: Provider {
     let usageService = "chatgpt.com"
     let keychainItem: String? = nil
     let downloadURL = URL(string: "https://chatgpt.com/download")!
+    // Its access token expires within days; the app refreshes it while it
+    // runs (Lanes never does).
+    let renewsSignIn = true
 
     func fetchUsage(dataDir: String) async throws -> Usage {
         let auth = try ChatGPTAuth.read(codexHome: dataDir + "/" + configSubdir)
