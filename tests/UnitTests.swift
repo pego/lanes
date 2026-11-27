@@ -755,6 +755,10 @@ enum UnitTests {
             equal(h["Gone"] == nil, true)
             let csv = UsageHistory.csv([UsageSample(t: Date(timeIntervalSince1970: 0), h: 12.5, w: nil)])
             equal(csv, "time,five_hour,weekly\n1970-01-01T00:00:00Z,12.5,\n")
+            // A ChatGPT Free profile's 30-day limit isn't called five_hour.
+            let free = UsageHistory.csv([UsageSample(t: Date(timeIntervalSince1970: 0), h: 12.5, w: 3),
+                                         UsageSample(t: Date(timeIntervalSince1970: 600), h: 40, w: nil, hWindow: 30 * 86400)])
+            equal(free, "time,limit1,window1,limit2,window2\n1970-01-01T00:00:00Z,12.5,5h,3,7d\n1970-01-01T00:10:00Z,40,30d,,\n")
         }
 
         // MARK: best profile

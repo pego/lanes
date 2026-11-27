@@ -63,6 +63,23 @@ printf 'Gpt\tteal\t0\t1\t\t1\t\t\t\t\t\t\tchatgpt\t18000\t604800\n' >> "$cli_hom
 check "provider: --best stays on Claude profiles" cli_says "$work_cfg " claude --best
 check "provider: ChatGPT clones get their own data and no self-update" sh -c 'out=$(zsh -c "source <(sed -n \"/^provider_launch_env()/,/^}/p\" bin/lanes); provider_launch_env chatgpt /p/Gpt; provider_launch_env claude /p/Work"); [ "$out" = "$(printf "CODEX_ELECTRON_USER_DATA_PATH=/p/Gpt\nCODEX_SPARKLE_ENABLED=false")" ]'
 rm -rf "$profiles_dir/Gpt" "$cli_home/err"
+# Other windows than Claude's are labeled by their window, in the status
+# line, run-out notes and history; Claude's output stays as it was.
+usage_tsv="$cli_home/Library/Application Support/Lanes/usage.tsv"
+cp "$usage_tsv" "$cli_home/usage.tsv.saved"
+far=$(( $(date +%s) + 10 * 86400 ))
+printf 'Free\tpink\t0\t40\t\t\t\t\t%s\t\t\t\tchatgpt\t2592000\t\nPlus\tteal\t0\t18\t\t33\t\t\t\t\t\t\tchatgpt\t18000\t604800\n' "$far" >> "$usage_tsv"
+check "statusline: a 30-day limit is labeled 30d" sh -c '[ "$(HOME="$1" NO_COLOR=1 zsh bin/lanes usage --statusline free)" = "Free · 30d 40% · out ~$(date -r "$2" "+%b %d %H:%M")" ]' _ "$cli_home" "$far"
+check "statusline: Plus reads like Claude's" cli_says "Plus · 5h 18% · week 33%" usage --statusline plus
+check "usage: a run-out over a week away shows its date" sh -c 'HOME="$1" NO_COLOR=1 zsh bin/lanes usage 2>&1 | grep -q "30-day limit is used up around $(date -r "$2" "+%b %d %H:%M")"' _ "$cli_home" "$far"
+cp "$cli_home/usage.tsv.saved" "$usage_tsv"
+hist="$cli_home/Library/Application Support/Lanes/usage-history.json"
+now=$(date +%s)
+print -r -- "{\"Work\":[{\"t\":$now,\"h\":12.5,\"w\":3}]}" > "$hist"
+check "history: Claude's columns unchanged" sh -c '[ "$(HOME="$1" zsh bin/lanes history | head -1)" = "profile,time,five_hour,weekly" ] && HOME="$1" zsh bin/lanes history | grep -q "^Work,.*,12.5,3$"' _ "$cli_home"
+print -r -- "{\"Work\":[{\"t\":$now,\"h\":12.5,\"w\":3}],\"Free\":[{\"t\":$now,\"h\":40,\"hw\":2592000}]}" > "$hist"
+check "history: other windows are named" sh -c 'out=$(HOME="$1" zsh bin/lanes history); [ "$(printf "%s\n" "$out" | head -1)" = "profile,time,limit1,window1,limit2,window2" ] && printf "%s\n" "$out" | grep -q "^Free,.*,40,30d,,$" && printf "%s\n" "$out" | grep -q "^Work,.*,12.5,5h,3,7d$"' _ "$cli_home"
+rm -f "$hist" "$cli_home/usage.tsv.saved"
 check "statusline: profile from CLAUDE_CONFIG_DIR" sh -c '[ "$(CLAUDE_CONFIG_DIR="$2" HOME="$1" NO_COLOR=1 zsh bin/lanes usage --statusline)" = "Work · 5h 20% · week 30%" ]' _ "$cli_home" "$work_cfg"
 check "statusline: Default without it" cli_says "Default · 5h 92% · week 10%" usage --statusline
 check "statusline: red at 90%" sh -c 'HOME="$1" zsh bin/lanes usage --statusline default | grep -q "$(printf "\033\\[31m92%%")"' _ "$cli_home"

@@ -64,11 +64,23 @@ enum UsageHistory {
     }
 
     // time,five_hour,weekly: ISO 8601 UTC times, empty when unknown.
-    // Same columns as `lanes history`, minus the profile.
+    // Readings on other windows than Claude's (a ChatGPT plan) name each
+    // limit's window instead: time,limit1,window1,limit2,window2, with tags
+    // like "30d". Same columns as `lanes history`, minus the profile.
     static func csv(_ samples: [UsageSample]) -> String {
         let f = ISO8601DateFormatter()
         func n(_ v: Double?) -> String { v.map { String(format: "%g", $0) } ?? "" }
-        return "time,five_hour,weekly\n" + samples.map { "\(f.string(from: $0.t)),\(n($0.h)),\(n($0.w))\n" }.joined()
+        guard samples.contains(where: { $0.hw != nil || $0.ww != nil }) else {
+            return "time,five_hour,weekly\n" + samples.map { "\(f.string(from: $0.t)),\(n($0.h)),\(n($0.w))\n" }.joined()
+        }
+        func tag(_ s: UsageSample, _ i: Int) -> String {
+            guard s.value(at: i) != nil, let w = s.window(at: i) else { return "" }
+            let sp = UsageLimit.span(w)
+            return "\(sp.n)\(sp.unit)"
+        }
+        return "time,limit1,window1,limit2,window2\n" + samples.map {
+            "\(f.string(from: $0.t)),\(n($0.h)),\(tag($0, 0)),\(n($0.w)),\(tag($0, 1))\n"
+        }.joined()
     }
 }
 

@@ -1275,10 +1275,20 @@ window_tag() {
   fi
 }
 
-# When a limit of this window runs out: a time for one shorter than a day,
-# else a day and time.
+# How to print when a limit of this window (seconds) runs out, at epoch
+# time $2 if given: a time for one shorter than a day, else a day and time,
+# or a date when that's more than a week away (as the app does).
 runs_out_format() {
-  (( $1 < 86400 )) && print -- "%H:%M" || print -- "%a %H:%M"
+  zmodload -F zsh/datetime p:EPOCHSECONDS
+  if [[ -n "${2:-}" ]] && (( $2 - EPOCHSECONDS > 604800 )); then print -- "%b %d %H:%M"
+  elif (( $1 < 86400 )); then print -- "%H:%M"
+  else print -- "%a %H:%M"
+  fi
+}
+
+# A limit in the status line: "5h", "week", "30d".
+limit_label() {
+  (( $1 == 604800 )) && print -- "week" || window_tag "$1"
 }
 
 # "5-hour limit", "weekly limit", "30-day limit".
@@ -1343,7 +1353,7 @@ fmt_reset() {
 # and a forecast warning. Never fails: a status line has nowhere to show errors.
 usage_statusline() {
   zmodload -F zsh/datetime b:strftime
-  local want="${1:-}" rec reset line
+  local want="${1:-}" rec reset line w1 w2
   local -a f
   want=${want:+$(displayify "$(slugify "$want")")}
   want=${want:-$(profile_of_config_dir "${CLAUDE_CONFIG_DIR:-}")}
@@ -1368,14 +1378,15 @@ usage_statusline() {
       print -r -- "$want · ${d}usage unavailable$z"
       return 0
     fi
-    line="$want · 5h $(sl_pct "${f[4]}")"
+    w1=$(record_window "$rec" 1) w2=$(record_window "$rec" 2)
+    line="$want · $(limit_label "$w1") $(sl_pct "${f[4]}")"
     reset=$(fmt_reset "${f[5]:-}")
     [[ -n "$reset" ]] && line+=" ${d}resets $reset$z"
-    [[ -n "${f[6]:-}" ]] && line+=" · week $(sl_pct "${f[6]}")"
+    [[ -n "${f[6]:-}" && -n "$w2" ]] && line+=" · $(limit_label "$w2") $(sl_pct "${f[6]}")"
     if [[ -n "${f[9]:-}" ]]; then
-      line+=" · ${o}out ~$(strftime "%H:%M" "${f[9]}")$z"
-    elif [[ -n "${f[10]:-}" ]]; then
-      line+=" · ${o}week out ~$(strftime "%a %H:%M" "${f[10]}")$z"
+      line+=" · ${o}out ~$(strftime "$(runs_out_format "$w1" "${f[9]}")" "${f[9]}")$z"
+    elif [[ -n "${f[10]:-}" && -n "$w2" ]]; then
+      line+=" · ${o}$(limit_label "$w2") out ~$(strftime "$(runs_out_format "$w2" "${f[10]}")" "${f[10]}")$z"
     fi
     if (( $(usage_age) > 1800 )) || [[ -n "${f[12]:-}" ]]; then
       line+=" ${d}(stale)$z"
@@ -1440,9 +1451,9 @@ cmd_usage() {
       fi
     done
     [[ -n "${f[9]:-}" ]] &&
-      notes+=("${f[1]}: at this pace, the $(window_noun "${w1:-18000}") is used up around $(strftime "$(runs_out_format "${w1:-18000}")" "${f[9]}")")
+      notes+=("${f[1]}: at this pace, the $(window_noun "${w1:-18000}") is used up around $(strftime "$(runs_out_format "${w1:-18000}" "${f[9]}")" "${f[9]}")")
     [[ -n "${f[10]:-}" ]] &&
-      notes+=("${f[1]}: at this pace, the $(window_noun "${w2:-604800}") is used up around $(strftime "%a %H:%M" "${f[10]}")")
+      notes+=("${f[1]}: at this pace, the $(window_noun "${w2:-604800}") is used up around $(strftime "$(runs_out_format "${w2:-604800}" "${f[10]}")" "${f[10]}")")
     [[ -n "${f[12]:-}" ]] &&
       notes+=("${f[1]}: the last check failed; these numbers are from $(strftime "%H:%M" "${f[12]}")")
   done
@@ -1487,16 +1498,28 @@ function run(argv) {
   }
   const since = Date.now() / 1000 - Number(days) * 86400
   const iso = t => new Date(t * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
+  // Readings on other windows than Claude's (hw/ww, a ChatGPT plan) name
+  // each limit's window ("30d") instead of five_hour/weekly.
+  const picked = {}
+  for (const n of names) picked[n] = all[n].filter(s => s.t >= since)
+  const mixed = names.some(n => picked[n].some(s => s.hw != null || s.ww != null))
+  const tag = w => (w >= 86400 && w % 86400 === 0 ? `${w / 86400}d`
+    : w >= 3600 && w % 3600 === 0 ? `${w / 3600}h` : `${Math.max(1, Math.floor(w / 60))}m`)
   const rows = {}
   for (const n of names) {
-    rows[n] = all[n].filter(s => s.t >= since)
-      .map(s => ({ time: iso(s.t), fiveHour: s.h ?? null, weekly: s.w ?? null }))
+    rows[n] = picked[n].map(s => mixed
+      ? { time: iso(s.t), limit1: s.h ?? null, window1: s.h == null ? null : tag(s.hw ?? 18000),
+          limit2: s.w ?? null, window2: s.w == null ? null : tag(s.ww ?? 604800) }
+      : { time: iso(s.t), fiveHour: s.h ?? null, weekly: s.w ?? null })
   }
   if (fmt === 'json') return JSON.stringify(rows, null, 2)
   const csv = v => (v === null ? '' : String(v))
   const q = n => (/[",\n]/.test(n) ? `"${n.replace(/"/g, '""')}"` : n)
-  const out = ['profile,time,five_hour,weekly']
-  for (const n of names) for (const r of rows[n]) out.push([q(n), r.time, csv(r.fiveHour), csv(r.weekly)].join(','))
+  const out = [mixed ? 'profile,time,limit1,window1,limit2,window2' : 'profile,time,five_hour,weekly']
+  for (const n of names) for (const r of rows[n]) {
+    out.push((mixed ? [q(n), r.time, csv(r.limit1), csv(r.window1), csv(r.limit2), csv(r.window2)]
+      : [q(n), r.time, csv(r.fiveHour), csv(r.weekly)]).join(','))
+  }
   return out.join('\n')
 }
 JS
