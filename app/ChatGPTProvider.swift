@@ -132,19 +132,28 @@ enum ChatGPTUsage {
     }
 
     // The newest rate_limits the app logged in <Codex home>/sessions/
-    // YYYY/MM/DD/rollout-*.jsonl, with their reset times. Only the last few
-    // files are read, newest first, from the end.
+    // YYYY/MM/DD/rollout-*.jsonl, with their reset times. A resumed session
+    // appends to its older-dated file, so the files are picked by when they
+    // were last written, not by their path: the last reading of each of the
+    // few most recent, and the newest of those by its own timestamp.
     static func latestLocal(codexHome: String) -> LocalReading? {
         let root = codexHome + "/sessions"
-        guard let e = FileManager.default.enumerator(atPath: root) else { return nil }
-        let files = e.compactMap { $0 as? String }.filter { $0.hasSuffix(".jsonl") }.sorted().suffix(5).reversed()
-        for f in files {
-            guard let text = try? String(contentsOfFile: root + "/" + f, encoding: .utf8) else { continue }
+        let fm = FileManager.default
+        guard let e = fm.enumerator(atPath: root) else { return nil }
+        let files = e.compactMap { $0 as? String }.filter { $0.hasSuffix(".jsonl") }
+            .map { f -> (path: String, at: Date) in
+                let path = root + "/" + f
+                return (path, (try? fm.attributesOfItem(atPath: path)[.modificationDate] as? Date) ?? .distantPast)
+            }
+            .sorted { $0.at > $1.at }.prefix(5)
+        let readings = files.compactMap { f -> LocalReading? in
+            guard let text = try? String(contentsOfFile: f.path, encoding: .utf8) else { return nil }
             for line in text.split(separator: "\n").reversed() where line.contains("\"rate_limits\"") {
                 if let r = localReading(Data(line.utf8)) { return r }
             }
+            return nil
         }
-        return nil
+        return readings.max { $0.t < $1.t }
     }
 
     // One token_count line: {"timestamp": "…", "payload": {"rate_limits":

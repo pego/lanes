@@ -467,6 +467,12 @@ enum UnitTests {
             equal(r?.limits.map(\.window), [18000, 604800])
             equal(r?.limits.first?.reset, Date(timeIntervalSince1970: 1790009000))
             equal(ChatGPTUsage.latestLocal(codexHome: "/nonexistent-lanes-test"), nil)
+            // A resumed session appends to its older-dated file: its newer
+            // reading wins over the newer-dated file's.
+            let resumed = "{\"timestamp\":\"2026-11-27T07:00:00Z\",\"payload\":{\"rate_limits\":{\"limit_id\":\"codex\",\"primary\":{\"used_percent\":42,\"window_minutes\":300}}}}\n"
+            let h = try FileHandle(forWritingTo: URL(fileURLWithPath: older + "/rollout-a.jsonl"))
+            h.seekToEndOfFile(); h.write(Data(resumed.utf8)); try h.close()
+            equal(ChatGPTUsage.latestLocal(codexHome: home)?.limits.map(\.used), [42])
             // Another limit (not the account's own) isn't read.
             let other = "{\"timestamp\":\"2026-11-27T00:00:00Z\",\"payload\":{\"rate_limits\":{\"limit_id\":\"x\",\"primary\":{\"used_percent\":1,\"window_minutes\":300}}}}"
             equal(ChatGPTUsage.localReading(Data(other.utf8)), nil)
