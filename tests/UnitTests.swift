@@ -717,6 +717,22 @@ enum UnitTests {
             expect(u.fromLocalRecord)
         }
 
+        test("merge: a record's limit whose own reset has passed starts over at 0") {
+            let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+            let five = UsageLimit(key: "primary", label: "5 hours", used: 80, reset: t0 - 60, window: 18000)
+            let week = UsageLimit(key: "secondary", label: "Week", used: 40, reset: t0 + 86400, window: 604800)
+            let u = ProfileStore.merge(fresh: Usage(error: "HTTP 500"), previous: nil, previousAt: nil,
+                                       local: LocalReading(t: t0 - 600, limits: [five, week]), now: t0)
+            equal(u.limit("primary")?.used, 0)
+            equal(u.limit("primary")?.reset, nil)
+            equal(u.limit("secondary")?.used, 40)
+            equal(u.limit("secondary")?.reset, t0 + 86400)
+            // Claude's record has no reset times of its own: its numbers stay.
+            let claude = ProfileStore.merge(fresh: Usage(error: "HTTP 500"), previous: nil, previousAt: nil,
+                                            local: LocalReading(t: t0 - 600, limits: [ClaudeLimit.fiveHour(80, reset: nil)]), now: t0)
+            equal(claude.primary?.used, 80)
+        }
+
         test("UsageHistory keeps one reading per ~10 minutes, for 30 days") {
             var list: [UsageSample] = []
             let t0 = Date()

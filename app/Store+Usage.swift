@@ -93,6 +93,14 @@ extension ProfileStore {
             func reset(_ r: Date?) -> Date? { r.flatMap { $0 > local.t && $0 > now ? $0 : nil } }
             var u = Usage(limits: local.limits.map { l in
                 var l = l
+                // A record with its own reset times (ChatGPT's): once one has
+                // passed, that window has started over, so its percentage is
+                // no longer the number to show.
+                if let own = l.reset, own <= now {
+                    l.used = 0
+                    l.reset = nil
+                    return l
+                }
                 l.reset = reset(l.reset ?? prev?.limit(l.key)?.reset)
                 return l
             }, error: nil)
