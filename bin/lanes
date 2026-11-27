@@ -125,9 +125,11 @@ provider_value() {
 }
 
 # Environment a provider's clone needs besides its config dir, as NAME=value
-# lines, for the profile folder $2. ChatGPT sets Electron's userData path
-# itself, ignoring --user-data-dir: CODEX_ELECTRON_USER_DATA_PATH moves it
-# (and gives each profile its own single-instance lock). Its clones never
+# lines, for the profile folder $2. ChatGPT's code sets Electron's userData
+# path from CODEX_ELECTRON_USER_DATA_PATH. --user-data-dir alone also worked
+# in testing (26.1120), but passing both, as OpenAI's demo launcher does,
+# keeps the data and the single-instance lock per profile even if that
+# changes. Its clones never
 # update themselves (CODEX_SPARKLE_ENABLED=false): Sparkle would relaunch
 # the clone without its flags, on the default account; it follows the
 # installed app instead (ensure_clone).

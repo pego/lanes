@@ -55,10 +55,12 @@ window; usage.json and usage.tsv keep their two column pairs, filled from
 a profile's first two limits, and record those limits' windows for any
 provider but Claude (usage.tsv: in its last three columns, for every row).
 
-ChatGPT ignores `--user-data-dir` for its own data: its clones start with
-`CODEX_ELECTRON_USER_DATA_PATH` (Electron's data) and `CODEX_HOME` (sign-in,
-sessions) pointing into the profile folder, `--user-data-dir` only so `ps`
-shows the profile, and `CODEX_SPARKLE_ENABLED=false`, so a clone never
+ChatGPT's code picks its data folder from `CODEX_ELECTRON_USER_DATA_PATH`.
+`--user-data-dir` alone also kept a clone apart in testing (26.1120), but
+its clones get both, as OpenAI's own demo launcher does, so isolation
+doesn't depend on which one wins in a later version. They also start with
+`CODEX_HOME` (sign-in, sessions) pointing into the profile folder (and
+`--user-data-dir` is what `ps` shows), and `CODEX_SPARKLE_ENABLED=false`, so a clone never
 updates itself and follows the installed app instead. Its usage comes from
 chatgpt.com's `wham/usage` with the token in the profile's
 `codex-home/auth.json`, which Lanes reads but never refreshes; the fallback

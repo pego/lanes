@@ -5,11 +5,13 @@
 //
 // A profile's ChatGPT keeps Electron's data in the profile folder and its
 // Codex home (auth.json, sessions/, config.toml) in <profile>/codex-home.
-// ChatGPT sets its own userData path, so --user-data-dir alone doesn't move
-// it: bin/lanes launches clones with CODEX_ELECTRON_USER_DATA_PATH and
-// CODEX_HOME in their environment, plus --user-data-dir so `ps` shows which
-// profile a process belongs to, and CODEX_SPARKLE_ENABLED=false so a clone
-// never updates itself (it follows the installed app; see ensure_clone).
+// ChatGPT's code sets its userData path from CODEX_ELECTRON_USER_DATA_PATH.
+// In practice --user-data-dir alone also kept a clone's data apart (tested
+// on 26.1120), but bin/lanes passes both, as OpenAI's own demo launcher
+// does, so isolation doesn't hang on which one wins in a later version. It
+// also sets CODEX_HOME, and CODEX_SPARKLE_ENABLED=false so a clone never
+// updates itself (it follows the installed app; see ensure_clone).
+// --user-data-dir is also what `ps` shows to tell profiles apart.
 
 import AppKit
 
