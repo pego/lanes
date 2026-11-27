@@ -337,7 +337,8 @@ enum UnitTests {
             }
             // A provider this Lanes doesn't know is shown as Claude (bin/lanes
             // refuses to launch it).
-            equal(Providers.named("chatgpt").id, "claude")
+            equal(Providers.named("chatgpt").id, "chatgpt")
+            equal(Providers.named("future-app").id, "claude")
             let p = Profile(name: "Work", dataDir: dir, colorName: "blue")
             equal(p.providerID, "claude")
             equal(p.provider.id, "claude")
@@ -366,6 +367,115 @@ enum UnitTests {
             expect(c.isMainProcess(clone) && !c.isInstalledApp(clone))
             expect(!c.isMainProcess(helper))
             expect(!c.isMainProcess("/Applications/Lanes.app/Contents/MacOS/Lanes"))
+        }
+
+        test("ChatGPTProvider: the values bin/lanes keeps too") {
+            let g = Providers.chatgpt
+            equal(g.id, "chatgpt")
+            equal(g.name, "ChatGPT")
+            equal(g.executable, "ChatGPT")
+            equal(g.bundleID, "com.openai.codex")
+            equal(g.configEnv, "CODEX_HOME")
+            equal(g.configSubdir, "codex-home")
+            equal(g.linkScheme, nil)
+            equal(g.probeURL, nil)
+            equal(g.keychainItem, nil)
+            equal(g.appCandidates, ["/Applications/ChatGPT.app", NSHomeDirectory() + "/Applications/ChatGPT.app"])
+            equal(g.clonePath(in: "/c", profile: "Work"), "/c/ChatGPT Work.app")
+            expect(g.updater == .sparkle && g.iconStyle == .tintedPlate)
+            // Its processes and Claude's are told apart; helpers and the
+            // bundled codex CLI aren't main processes.
+            let clone = "/x/apps/ChatGPT Work.app/Contents/MacOS/ChatGPT --user-data-dir=/x/profiles/Work"
+            let cli = "/x/apps/ChatGPT Work.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex app-server"
+            let helper = "/x/apps/ChatGPT Work.app/Contents/Frameworks/ChatGPT Helper (GPU).app/Contents/MacOS/ChatGPT Helper (GPU) --user-data-dir=/x/profiles/Work"
+            expect(g.isMainProcess(clone) && !g.isInstalledApp(clone))
+            expect(g.isInstalledApp("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"))
+            expect(!g.isMainProcess(cli) && !g.isMainProcess(helper))
+            expect(!Providers.claude.isMainProcess(clone) && !g.isMainProcess("/Applications/Claude.app/Contents/MacOS/Claude"))
+        }
+
+        test("ChatGPT usage: Plus has a 5-hour and a weekly window") {
+            let u = try ChatGPTUsage.parse(try fixture("wham-usage-plus.json"))
+            equal(u.limits.map(\.key), ["primary", "secondary"])
+            equal(u.limits.map(\.window), [18000, 604800])
+            equal(u.limits.map(\.label), ["5 hours", "Week"])
+            equal(u.limits.map(\.tag), ["5h", "7d"])
+            equal(u.primary?.used, 23)
+            equal(u.secondary?.used, 41)
+            equal(u.primary?.reset, Date(timeIntervalSince1970: 1790009000))
+            equal(u.error, nil)
+        }
+
+        test("ChatGPT usage: Free has one 30-day window, reset from reset_after_seconds") {
+            let now = Date(timeIntervalSince1970: 1790000000)
+            let u = try ChatGPTUsage.parse(try fixture("wham-usage-free.json"), now: now)
+            equal(u.limits.count, 1)
+            equal(u.primary?.window, 30 * 86400)
+            equal(u.primary?.label, "30 days")
+            equal(u.primary?.noun, "30-day limit")
+            equal(u.primary?.used, 40)
+            equal(u.primary?.reset, now.addingTimeInterval(864000))
+            equal(u.secondary, nil)
+        }
+
+        test("ChatGPT usage: another reply shape is a format change") {
+            for body in ["{}", "{\"rate_limit\": {}}", "[]", "not json"] {
+                do { _ = try ChatGPTUsage.parse(Data(body.utf8)); expect(false, body) }
+                catch { expect(isFormatError(error), body) }
+            }
+        }
+
+        test("ChatGPT sign-in: auth.json's token and account, never an expired one") {
+            func jwt(exp: Double) -> String {
+                let claims = try! JSONSerialization.data(withJSONObject: ["exp": exp])
+                let b64 = claims.base64EncodedString().replacingOccurrences(of: "=", with: "")
+                    .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+                return "eyJhbGciOiJub25lIn0.\(b64).sig"
+            }
+            let now = Date(timeIntervalSince1970: 1790000000)
+            func auth(_ token: String) -> Data {
+                Data("{\"auth_mode\":\"chatgpt\",\"tokens\":{\"access_token\":\"\(token)\",\"account_id\":\"acc-1\"}}".utf8)
+            }
+            let ok = try ChatGPTAuth.parse(auth(jwt(exp: 1790003600)), now: now)
+            equal(ok.accountID, "acc-1")
+            equal(ChatGPTAuth.jwtExpiry(ok.accessToken), Date(timeIntervalSince1970: 1790003600))
+            do { _ = try ChatGPTAuth.parse(auth(jwt(exp: 1789999999)), now: now); expect(false) }
+            catch { equal(error.localizedDescription, "session expired") }
+            for body in ["{\"OPENAI_API_KEY\":\"sk-x\",\"tokens\":null}", "{}", "nope"] {
+                do { _ = try ChatGPTAuth.parse(Data(body.utf8), now: now); expect(false, body) }
+                catch { equal(error.localizedDescription, "not signed in") }
+            }
+            // A missing file is "not signed in", which Usage treats as such.
+            do { _ = try ChatGPTAuth.read(codexHome: "/nonexistent-lanes-test"); expect(false) }
+            catch { expect(Usage(error: error.localizedDescription).needsSignIn) }
+        }
+
+        test("ChatGPT's own record: the newest rate_limits, with reset times") {
+            let home = NSTemporaryDirectory() + "lanes-codex-test-\(UUID().uuidString)"
+            defer { try? FileManager.default.removeItem(atPath: home) }
+            let day = home + "/sessions/2026/11/27", older = home + "/sessions/2026/11/26"
+            try FileManager.default.createDirectory(atPath: day, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(atPath: older, withIntermediateDirectories: true)
+            try fixture("codex-session.jsonl").write(to: URL(fileURLWithPath: day + "/rollout-b.jsonl"))
+            try Data("{\"timestamp\":\"2026-11-26T00:00:00Z\",\"payload\":{\"rate_limits\":{\"primary\":{\"used_percent\":99,\"window_minutes\":300}}}}\n".utf8)
+                .write(to: URL(fileURLWithPath: older + "/rollout-a.jsonl"))
+            let r = ChatGPTUsage.latestLocal(codexHome: home)
+            equal(r?.t, iso("2026-11-27T06:19:50Z").addingTimeInterval(0.381))
+            equal(r?.limits.map(\.used), [11, 10])
+            equal(r?.limits.map(\.window), [18000, 604800])
+            equal(r?.limits.first?.reset, Date(timeIntervalSince1970: 1790009000))
+            equal(ChatGPTUsage.latestLocal(codexHome: "/nonexistent-lanes-test"), nil)
+            // Another limit (not the account's own) isn't read.
+            let other = "{\"timestamp\":\"2026-11-27T00:00:00Z\",\"payload\":{\"rate_limits\":{\"limit_id\":\"x\",\"primary\":{\"used_percent\":1,\"window_minutes\":300}}}}"
+            equal(ChatGPTUsage.localReading(Data(other.utf8)), nil)
+        }
+
+        test("Window labels for windows a provider doesn't name") {
+            equal(UsageLimit.label(forWindow: 5 * 3600), "5 hours")
+            equal(UsageLimit.label(forWindow: 7 * 86400), "Week")
+            equal(UsageLimit.label(forWindow: 30 * 86400), "30 days")
+            equal(UsageLimit.label(forWindow: 86400), "Day")
+            equal(UsageLimit.label(forWindow: 3600), "Hour")
         }
 
         // MARK: limits as data

@@ -3,10 +3,11 @@
 // where a profile keeps its settings, how links reach it, how it updates,
 // how its icon takes a profile's color, and how to read its usage.
 //
-// Only Claude exists today (ClaudeProvider.swift). A profile names its
-// provider in an optional `.lanes-provider` file in its folder, next to
-// `.lanes-color`; a missing file means "claude". bin/lanes reads the same
-// file and keeps the same values in its provider_* functions.
+// Claude (ClaudeProvider.swift) and ChatGPT (ChatGPTProvider.swift). A
+// profile names its provider in an optional `.lanes-provider` file in its
+// folder, next to `.lanes-color`; a missing file means "claude" (`lanes add
+// --provider` writes one only for other providers). bin/lanes reads the
+// same file and keeps the same values in its provider_* functions.
 
 import AppKit
 
@@ -19,7 +20,7 @@ enum UpdaterKind { case squirrel, sparkle }
 enum IconStyle { case hueShift, tintedPlate }
 
 protocol Provider {
-    // The `.lanes-provider` value: "claude".
+    // The `.lanes-provider` value: "claude", "chatgpt".
     var id: String { get }
     // The app's name: "Claude". Its bundle is "<name>.app" and each
     // profile's clone and launcher "<name> <Profile>.app".
@@ -82,11 +83,14 @@ extension Provider {
     }
 
     var probeURL: URL? { linkScheme.flatMap { URL(string: $0 + "://") } }
+
+    var isInstalled: Bool { FileManager.default.fileExists(atPath: appPath) }
 }
 
 enum Providers {
     static let claude = ClaudeProvider()
-    static let all: [any Provider] = [claude]
+    static let chatgpt = ChatGPTProvider()
+    static let all: [any Provider] = [claude, chatgpt]
     static let defaultID = "claude"
 
     // Unknown ids (a profile from a newer Lanes) fall back to Claude.

@@ -79,6 +79,16 @@ struct UsageLimit: Equatable, Identifiable {
 
     static let week: TimeInterval = 7 * 86400
 
+    // Above a meter, for a window a provider doesn't name: "5 hours",
+    // "Week", "30 days", "Day".
+    static func label(forWindow w: TimeInterval) -> String {
+        if w == week { return "Week" }
+        let s = span(w)
+        let unit = ["m": "minute", "h": "hour", "d": "day"][s.unit]!
+        if s.n == 1 { return unit.prefix(1).uppercased() + unit.dropFirst() }
+        return "\(s.n) \(unit)s"
+    }
+
     // A window in whole days, else whole hours, else minutes.
     static func span(_ w: TimeInterval) -> (n: Int, unit: String) {
         let s = Int(w.rounded())
