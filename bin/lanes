@@ -73,13 +73,67 @@ ok()   { print -- "✓ $*" }
 info() { print -- "ℹ $*" }
 warn() { print -u2 -- "⚠ $*" }
 
-find_claude_app() {
-  local c
-  for c in "/Applications/Claude.app" "$HOME/Applications/Claude.app"; do
+# ---- providers ---------------------------------------------------------------
+# The desktop app a profile runs. Only Claude so far. A profile names its
+# provider in an optional .lanes-provider file in its folder, next to
+# .lanes-color; a missing or empty one means "claude". The app keeps the
+# same values in app/Provider.swift and app/ClaudeProvider.swift.
+
+PROVIDERS=(claude)
+
+# The provider id a profile folder names, whether or not this Lanes knows it.
+provider_of_profile() {
+  local f="$1/.lanes-provider" p=""
+  [[ -f "$f" ]] && p=$(head -1 "$f" | tr -d '[:space:]')
+  print -- "${p:-claude}"
+}
+
+provider_known() { (( ${PROVIDERS[(Ie)$1]} )) }
+
+# One of a provider's values:
+#   name        its app's name: Claude.app, and "Claude <Profile>.app" for a
+#               profile's clone and launcher
+#   apps        where the app may be installed, in order, one per line
+#   executable  Contents/MacOS/<executable>
+#   config_env  the env var pointing it at a profile's private config dir…
+#   config_dir  …and that dir's name inside the profile folder
+provider_value() {
+  case "$1:$2" in
+    claude:name)       print -- "Claude" ;;
+    claude:apps)       print -l -- "/Applications/Claude.app" "$HOME/Applications/Claude.app" ;;
+    claude:executable) print -- "Claude" ;;
+    claude:config_env) print -- "CLAUDE_CONFIG_DIR" ;;
+    claude:config_dir) print -- "claude-config" ;;
+    *) err "Unknown provider value '$2' for '$1'." ;;
+  esac
+}
+
+# The provider whose names a profile's apps go by: its own, or Claude for
+# one this Lanes doesn't know (launch_profile refuses to start those).
+named_provider_of_profile() {
+  local p
+  p=$(provider_of_profile "$1")
+  provider_known "$p" && print -- "$p" || print -- claude
+}
+
+# "Claude Work.app": the name of a profile's clone (in CLONES_DIR) and of its
+# launcher (in LAUNCHER_DIR).
+profile_app_name() {
+  print -- "$(provider_value "$(named_provider_of_profile "$PROFILES_DIR/$1")" name) $1.app"
+}
+clone_of_profile() { print -- "$CLONES_DIR/$(profile_app_name "$1")" }
+launcher_of_profile() { print -- "$LAUNCHER_DIR/$(profile_app_name "$1")" }
+
+# The installed app of a provider (default: claude).
+find_provider_app() {
+  local p="${1:-claude}" c
+  for c in "${(@f)$(provider_value "$p" apps)}"; do
     [[ -d "$c" ]] && { print -- "$c"; return }
   done
-  err "Claude.app not found in /Applications or ~/Applications."
+  err "$(provider_value "$p" name).app not found in /Applications or ~/Applications."
 }
+
+find_claude_app() { find_provider_app claude }
 
 # "client acme" -> slug "client-acme", display "Client Acme"
 slugify() {
@@ -369,9 +423,10 @@ has_custom_icon() {
 # whole script at the call site's assignment.
 instance_pid() {
   # The whole path, not a prefix: "Work" must not match a running "Workshop".
-  local line flag="--user-data-dir=$1"
+  local line flag="--user-data-dir=$1" exe
+  exe="/Contents/MacOS/$(provider_value "$(named_provider_of_profile "$1")" executable) "
   ps -axo pid=,command= 2>/dev/null | while IFS= read -r line; do
-    [[ "$line" == *"/Contents/MacOS/Claude "* && "$line" != *Helper* ]] || continue
+    [[ "$line" == *"$exe"* && "$line" != *Helper* ]] || continue
     [[ "$line" == *"$flag" || "$line" == *"$flag "* ]] || continue
     line="${line##[[:space:]]#}"
     print -- "${line%% *}"
@@ -387,7 +442,7 @@ instance_pid() {
 # ended up in unrelated `claude` sessions. Lives inside the data dir so it
 # travels with the profile.
 config_dir_of_profile() {
-  print -- "$1/claude-config"
+  print -- "$1/$(provider_value "$(named_provider_of_profile "$1")" config_dir)"
 }
 
 # Starts the clone with the profile's data dir AND a private Claude Code
@@ -399,15 +454,18 @@ config_dir_of_profile() {
 # calling shell leaks in; CLAUDE_CONFIG_DIR goes in via --env. -n so a stray
 # of the same bundle (no --user-data-dir) is never just re-activated.
 launch_clone() {
-  local clone="$1" data_dir="$2" cfg
+  local clone="$1" data_dir="$2" cfg provider env exe
   cfg=$(config_dir_of_profile "$data_dir")
+  provider=$(named_provider_of_profile "$data_dir")
+  env=$(provider_value "$provider" config_env)
+  exe=$(provider_value "$provider" executable)
   # Hard invariant: a clone process must never exist without BOTH its
   # --user-data-dir and its CLAUDE_CONFIG_DIR. Refuse rather than start a
   # process that would fall back to the shared/default identity.
-  [[ -n "$data_dir" && -n "$cfg" ]] || err "Refusing to launch: empty data or config dir."
-  [[ -x "$clone/Contents/MacOS/Claude" ]] || err "Refusing to launch: clone binary missing at $clone."
+  [[ -n "$data_dir" && -n "$cfg" && -n "$env" ]] || err "Refusing to launch: empty data or config dir."
+  [[ -x "$clone/Contents/MacOS/$exe" ]] || err "Refusing to launch: clone binary missing at $clone."
   mkdir -p "$cfg"
-  /usr/bin/open -n -a "$clone" --env CLAUDE_CONFIG_DIR="$cfg" \
+  /usr/bin/open -n -a "$clone" --env "$env=$cfg" \
     --args --user-data-dir="$data_dir"
 }
 
@@ -418,13 +476,17 @@ launch_clone() {
 # still titled "Claude <Profile>". Args are the only thing `ps` lets us
 # check (hardened runtime hides env), and both are dropped together.
 stray_pids() {
-  local line pid cmd rest display
-  ps -axo pid=,command= 2>/dev/null | grep -F -- "$CLONES_DIR/" | grep -F "/Contents/MacOS/Claude" | grep -v Helper | grep -v grep | grep -vF -- "--user-data-dir=" | while IFS= read -r line; do
-    pid="${line##[[:space:]]#}"; pid="${pid%% *}"
-    cmd="${line#*"$CLONES_DIR/"}"
-    display="${${cmd%%.app/Contents/MacOS/Claude*}#Claude }"
-    [[ -n "$display" ]] && print -- "$pid"$'\t'"$display"
-  done || true
+  local line pid cmd rest display p name exe
+  for p in $PROVIDERS; do
+    name=$(provider_value "$p" name)
+    exe="/Contents/MacOS/$(provider_value "$p" executable)"
+    ps -axo pid=,command= 2>/dev/null | grep -F -- "$CLONES_DIR/" | grep -F "$exe" | grep -v Helper | grep -v grep | grep -vF -- "--user-data-dir=" | while IFS= read -r line; do
+      pid="${line##[[:space:]]#}"; pid="${pid%% *}"
+      cmd="${line#*"$CLONES_DIR/"}"
+      display="${${cmd%%.app$exe*}#$name }"
+      [[ -n "$display" ]] && print -- "$pid"$'\t'"$display"
+    done || true
+  done
 }
 
 # Quits every stray clone and relaunches it as its profile. Idempotent:
@@ -560,15 +622,15 @@ rebuild_chooser_unless_nested() {
 # already-running instance, then the applet exits. stderr stays attached so
 # a failed launch surfaces as an alert instead of dying silently.
 build_launcher() {
-  local slug="$1" display="$2" color="$3" claude_app="$4" tmp
-  local app_path="$LAUNCHER_DIR/Claude $display.app"
+  local slug="$1" display="$2" color="$3" claude_app="$4" tmp app_path
+  app_path=$(launcher_of_profile "$display")
   tmp=$(mktemp -d)
   cat > "$tmp/launcher.applescript" <<EOF
 on run
 	try
 		do shell script "/bin/zsh " & quoted form of (POSIX path of (path to me) & "Contents/Resources/lanes") & " launch " & quoted form of "$slug" & " > /dev/null"
 	on error msg
-		display alert "Could not launch Claude $display" message msg as critical
+		display alert "Could not launch ${${app_path:t}%.app}" message msg as critical
 	end try
 end run
 EOF
@@ -596,12 +658,13 @@ bundle_script() {
 # an old copy behind. Launchers whose profile has no launcher (removed with
 # --keep-data) stay removed.
 sync_install() {
-  local claude_app d display
-  claude_app=$(find_claude_app)
+  local d display
+  find_claude_app >/dev/null
   for d in "$PROFILES_DIR"/*(N/); do
     display="${d:t}"
-    [[ -d "$LAUNCHER_DIR/Claude $display.app" ]] || continue
-    build_launcher "$(slugify "$display")" "$display" "$(color_of_profile "$d")" "$claude_app"
+    [[ -d "$(launcher_of_profile "$display")" ]] || continue
+    build_launcher "$(slugify "$display")" "$display" "$(color_of_profile "$d")" \
+      "$(find_provider_app "$(named_provider_of_profile "$d")")"
   done
   install_watchdog --quiet --restart
   # Pre-bundle helper binary: a TCC-denied anonymous "tinticon".
@@ -620,8 +683,8 @@ cmd_add() {
   [[ -n "$slug" ]] || err "Name must contain at least one letter or digit."
   display=$(displayify "$slug")
   data_dir="$PROFILES_DIR/$display"
-  app_path="$LAUNCHER_DIR/Claude $display.app"
-  claude_app=$(find_claude_app)
+  app_path=$(launcher_of_profile "$display")
+  claude_app=$(find_provider_app "$(named_provider_of_profile "$data_dir")")
 
   # An existing data folder means this is a rebuild, not a new profile. It
   # doesn't prove sign-in ever finished; good enough to skip the login hint.
@@ -643,7 +706,7 @@ cmd_add() {
     ok "Profile '$display' created (color: $color)."
   fi
   info "Data folder:  $data_dir"
-  info "Launcher:     $app_path  (Spotlight: 'Claude $display')"
+  info "Launcher:     $app_path  (Spotlight: '${${app_path:t}%.app}')"
   if (( ! existed )); then
     print
     info "First launch: with the Lanes app running, just open the launcher"
@@ -768,13 +831,18 @@ EOF
 # directly instead).
 launch_profile() {
   local raw="$1"
-  local display data_dir color clone claude_app pid tool
+  local display data_dir color clone claude_app pid tool provider
   display=$(displayify "$(slugify "$raw")")
   data_dir="$PROFILES_DIR/$display"
   [[ -d "$data_dir" ]] || err "Profile '$display' not found. Create it with: lanes add $raw"
+  # A profile for an app this Lanes doesn't know (written by a newer one)
+  # is never started as Claude: its data folder isn't Claude's.
+  provider=$(provider_of_profile "$data_dir")
+  provider_known "$provider" ||
+    err "Profile '$display' runs '$provider', which this version of Lanes can't launch. Update Lanes: lanes update"
   color=$(color_of_profile "$data_dir")
-  claude_app=$(find_claude_app)
-  clone="$CLONES_DIR/Claude $display.app"
+  claude_app=$(find_provider_app "$provider")
+  clone=$(clone_of_profile "$display")
 
   pid=$(instance_pid "$data_dir")
   if [[ -n "$pid" ]]; then
@@ -834,7 +902,7 @@ find_claude_cli() {
 # (unset = ~/.claude, the main install's).
 profile_of_config_dir() {
   local cfg="${1:-}"
-  if [[ -n "$cfg" && "${cfg:A}" == "${PROFILES_DIR:A}"/*/claude-config ]]; then
+  if [[ -n "$cfg" && "${cfg:A}" == "${PROFILES_DIR:A}"/*/"$(provider_value claude config_dir)" ]]; then
     print -- "${${cfg:A}:h:t}"
   else
     print -- "Default"
@@ -861,10 +929,11 @@ cmd_claude() {
   fi
   local data_dir="$PROFILES_DIR/$display" cfg
   [[ -d "$data_dir" ]] || err "Profile '$display' not found. Create it with: lanes add $raw"
-  cfg=$(config_dir_of_profile "$data_dir")
+  # Claude Code's config dir, the one the profile's Claude Desktop uses.
+  cfg="$data_dir/$(provider_value claude config_dir)"
   mkdir -p "$cfg"
   print -u2 -- "ℹ Claude Code on $display"
-  exec env CLAUDE_CONFIG_DIR="$cfg" "$cli" "$@"
+  exec env "$(provider_value claude config_env)=$cfg" "$cli" "$@"
 }
 
 # The `lanes` to write into settings files: the app's own copy, which stays
@@ -1352,9 +1421,9 @@ cmd_color() {
   local display data_dir app_path claude_app
   display=$(displayify "$(slugify "$raw")")
   data_dir="$PROFILES_DIR/$display"
-  app_path="$LAUNCHER_DIR/Claude $display.app"
+  app_path=$(launcher_of_profile "$display")
   [[ -d "$data_dir" ]] || err "Profile '$display' not found."
-  claude_app=$(find_claude_app)
+  claude_app=$(find_provider_app "$(named_provider_of_profile "$data_dir")")
 
   print -- "$color" > "$data_dir/.lanes-color"
   ok "Color for '$display' set to $color."
@@ -1368,7 +1437,8 @@ cmd_color() {
     info "No launcher found; run 'lanes add $raw' to create one with this color."
   fi
 
-  local clone="$CLONES_DIR/Claude $display.app"
+  local clone
+  clone=$(clone_of_profile "$display")
   if [[ -d "$clone" ]]; then
     apply_clone_icon "$claude_app" "$clone" "$color"
     ok "Profile app icon updated. (Takes effect on next launch if running.)"
@@ -1704,7 +1774,7 @@ cmd_doctor() {
   fi
 
   # Each profile: its launcher, its clone's version, its sign-in.
-  local tsvfile="$DATA_DIR/usage.tsv" d name v
+  local tsvfile="$DATA_DIR/usage.tsv" d name v clone
   typeset -A uerr
   local line
   if [[ -f "$tsvfile" ]]; then
@@ -1717,14 +1787,15 @@ cmd_doctor() {
   fi
   for d in "$PROFILES_DIR"/*(N/); do
     name="${d:t}"
-    if [[ -d "$LAUNCHER_DIR/Claude $name.app" ]]; then
+    if [[ -d "$(launcher_of_profile "$name")" ]]; then
       row ok "launcher:$name" "$name: launcher in place"
     else
       row fail "launcher:$name" "$name: launcher missing" "Spotlight can't open this profile." "launcher:$name"
     fi
     v=""
-    [[ -f "$CLONES_DIR/Claude $name.app/Contents/Info.plist" ]] &&
-      v=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$CLONES_DIR/Claude $name.app/Contents/Info.plist" 2>/dev/null || true)
+    clone=$(clone_of_profile "$name")
+    [[ -f "$clone/Contents/Info.plist" ]] &&
+      v=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$clone/Contents/Info.plist" 2>/dev/null || true)
     if [[ -n "$v" && -n "$installed" ]] && version_lt "$v" "$installed"; then
       row warn "clone:$name" "$name runs Claude $v" "Claude $installed is installed; $name catches up the next time it starts."
     fi
@@ -1787,11 +1858,11 @@ cmd_doctor() {
 }
 
 cmd_list() {
-  local d found=0
+  local d found=0 app
   for d in "$PROFILES_DIR"/*(N/); do
     found=1
     local display="${d:t}"
-    local app="$LAUNCHER_DIR/Claude $display.app"
+    app=$(launcher_of_profile "$display")
     if [[ -d "$app" ]]; then
       print -- "  $display\t$d\t(launcher ok)"
     else
@@ -1807,11 +1878,12 @@ cmd_remove() {
   local display data_dir app_path
   display=$(displayify "$(slugify "$raw")")
   data_dir="$PROFILES_DIR/$display"
-  app_path="$LAUNCHER_DIR/Claude $display.app"
+  app_path=$(launcher_of_profile "$display")
 
   [[ -d "$app_path" ]] && { rm -rf "$app_path"; ok "Deleted launcher $app_path" }
 
-  local clone="$CLONES_DIR/Claude $display.app"
+  local clone
+  clone=$(clone_of_profile "$display")
   [[ -d "$clone" ]] && { rm -rf "$clone"; ok "Deleted profile app clone" }
 
   if [[ -d "$data_dir" ]]; then

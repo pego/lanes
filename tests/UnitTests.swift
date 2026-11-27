@@ -322,6 +322,52 @@ enum UnitTests {
                                 samples: [(now.addingTimeInterval(-3600), 10)], lookback: 3600, minSpan: 900, now: now), nil)
         }
 
+        // MARK: providers
+
+        test("A profile's .lanes-provider names its provider, missing means claude") {
+            let dir = NSTemporaryDirectory() + "lanes-provider-test-\(UUID().uuidString)"
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: dir) }
+            let file = dir + "/.lanes-provider"
+            equal(Providers.id(ofProfileAt: dir), "claude")
+            for (text, id) in [("claude\n", "claude"), (" chatgpt \r\nignored", "chatgpt"), ("", "claude"),
+                               ("\nchatgpt", "claude"), ("  \n", "claude")] {
+                try text.write(toFile: file, atomically: true, encoding: .utf8)
+                equal(Providers.id(ofProfileAt: dir), id)
+            }
+            // A provider this Lanes doesn't know is shown as Claude (bin/lanes
+            // refuses to launch it).
+            equal(Providers.named("chatgpt").id, "claude")
+            let p = Profile(name: "Work", dataDir: dir, colorName: "blue")
+            equal(p.providerID, "claude")
+            equal(p.provider.id, "claude")
+        }
+
+        test("ClaudeProvider: the values bin/lanes keeps too") {
+            let c = Providers.claude
+            equal(c.id, "claude")
+            equal(c.executable, "Claude")
+            equal(c.bundleID, "com.anthropic.claudefordesktop")
+            equal(c.configEnv, "CLAUDE_CONFIG_DIR")
+            equal(c.configSubdir, "claude-config")
+            equal(c.linkScheme, "claude")
+            equal(c.probeURL, URL(string: "claude://"))
+            equal(c.appCandidates, ["/Applications/Claude.app", NSHomeDirectory() + "/Applications/Claude.app"])
+            equal(c.clonePath(in: "/c", profile: "Work"), "/c/Claude Work.app")
+            expect(c.updater == .squirrel && c.iconStyle == .hueShift)
+        }
+
+        test("Process matching: main processes only, the install apart from clones") {
+            let c = Providers.claude
+            let main = "/Applications/Claude.app/Contents/MacOS/Claude"
+            let clone = "/x/apps/Claude Work.app/Contents/MacOS/Claude --user-data-dir=/x/profiles/Work"
+            let helper = "/x/apps/Claude Work.app/Contents/Frameworks/Claude Helper (Renderer).app/Contents/MacOS/Claude Helper (Renderer) --user-data-dir=/x/profiles/Work"
+            expect(c.isMainProcess(main) && c.isInstalledApp(main))
+            expect(c.isMainProcess(clone) && !c.isInstalledApp(clone))
+            expect(!c.isMainProcess(helper))
+            expect(!c.isMainProcess("/Applications/Lanes.app/Contents/MacOS/Lanes"))
+        }
+
         // MARK: limits as data
 
         test("Claude's usage is the 5-hour + weekly pair, in that order") {

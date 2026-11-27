@@ -44,6 +44,17 @@ check "claude: passes args without --" cli_says "$work_cfg --version" claude wor
 check "claude: default clears CLAUDE_CONFIG_DIR" sh -c 'CLAUDE_CONFIG_DIR=/x HOME="$1" PATH="$1/bin:/usr/bin:/bin" zsh bin/lanes claude default 2>/dev/null | grep -qx "unset "' _ "$cli_home"
 check "claude: --best picks the roomiest" cli_says "$work_cfg " claude --best
 check "claude: unknown profile fails" sh -c '! HOME="$1" PATH="$1/bin:/usr/bin:/bin" zsh bin/lanes claude ghost' _ "$cli_home"
+# .lanes-provider: "claude" (or none) is today's behavior; a provider this
+# Lanes doesn't know is never launched (as Claude or otherwise).
+profiles_dir="$cli_home/Library/Application Support/Lanes/profiles"
+print claude > "$profiles_dir/Work/.lanes-provider"
+check "provider: an explicit claude changes nothing" cli_says "$work_cfg -p hi" claude work -- -p hi
+rm "$profiles_dir/Work/.lanes-provider"
+mkdir -p "$profiles_dir/Odd"
+print future-app > "$profiles_dir/Odd/.lanes-provider"
+check "provider: an unknown one isn't launched" sh -c '! HOME="$1" PATH="/usr/bin:/bin" zsh bin/lanes launch odd 2>"$1/err" && grep -q "runs .future-app., which this version of Lanes can.t launch" "$1/err"' _ "$cli_home"
+check "provider: its profile still lists" sh -c 'HOME="$1" zsh bin/lanes list | grep -q "^  Odd	"' _ "$cli_home"
+rm -rf "$profiles_dir/Odd" "$cli_home/err"
 check "statusline: profile from CLAUDE_CONFIG_DIR" sh -c '[ "$(CLAUDE_CONFIG_DIR="$2" HOME="$1" NO_COLOR=1 zsh bin/lanes usage --statusline)" = "Work · 5h 20% · week 30%" ]' _ "$cli_home" "$work_cfg"
 check "statusline: Default without it" cli_says "Default · 5h 92% · week 10%" usage --statusline
 check "statusline: red at 90%" sh -c 'HOME="$1" zsh bin/lanes usage --statusline default | grep -q "$(printf "\033\\[31m92%%")"' _ "$cli_home"

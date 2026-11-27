@@ -239,7 +239,8 @@ final class ProfileStore: ObservableObject {
                 if fm.fileExists(atPath: full, isDirectory: &isDir), isDir.boolValue {
                     let color = (try? String(contentsOfFile: full + "/.lanes-color", encoding: .utf8))?
                         .trimmingCharacters(in: .whitespacesAndNewlines) ?? "orange"
-                    list.append(Profile(name: entry, dataDir: full, colorName: color))
+                    list.append(Profile(name: entry, dataDir: full, colorName: color,
+                                        providerID: Providers.id(ofProfileAt: full)))
                 }
             }
         }

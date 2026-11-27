@@ -93,6 +93,15 @@ enum Providers {
     static func named(_ id: String) -> any Provider {
         all.first { $0.id == id } ?? claude
     }
+
+    // A profile folder's `.lanes-provider`: its first line, whitespace
+    // dropped (as bin/lanes reads it). Missing or empty means "claude".
+    static func id(ofProfileAt dir: String) -> String {
+        let text = (try? String(contentsOfFile: dir + "/.lanes-provider", encoding: .utf8)) ?? ""
+        let first = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).first ?? ""
+        let id = first.filter { !$0.isWhitespace }
+        return id.isEmpty ? defaultID : String(id)
+    }
 }
 
 // The first candidate that exists, or the first one.
