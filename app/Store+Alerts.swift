@@ -224,16 +224,34 @@ extension ProfileStore {
     // Scheduled with the system so it fires even if this app has quit.
     // Re-scheduled on every refresh (same identifier), so a moved reset time
     // or a drop back under the level is picked up.
+    // A reset alert already scheduled for a limit the usage no longer has (a
+    // signed-out profile, an error, a plan whose windows changed) is cancelled.
     func scheduleResetAlerts(_ u: Usage, for id: String) {
+        var keep = Set<String>()
         for l in u.limits {
-            let ident = "reset-\(l.tag)-\(id)"
+            let ident = Self.resetAlertID(tag: l.tag, profile: id)
             guard wantsResetAlert("\(id)/\(l.tag)", value: l.used, reset: l.reset), let r = l.reset else {
                 Notifier.shared.cancel([ident]); continue
             }
+            keep.insert(ident)
             Notifier.shared.schedule(ident, at: r, title: "\(id): \(l.noun) reset",
                                      body: "\(id) has its full \(l.noun) again. You're good to go.",
                                      category: AlertAction.category(.reset, id),
                                      info: info(id, l.tag, reset: r, best: nil))
+        }
+        Notifier.shared.cancelPending { Self.staleResetAlerts($0, profile: id, keep: keep) }
+    }
+
+    static func resetAlertID(tag: String, profile: String) -> String { "reset-\(tag)-\(profile)" }
+
+    // Of the pending identifiers, this profile's reset alerts not in `keep`.
+    // A tag ("5h", "7d", "30d") never has a dash, so the profile is the rest.
+    static func staleResetAlerts(_ pending: [String], profile: String, keep: Set<String>) -> [String] {
+        pending.filter { ident in
+            guard ident.hasPrefix("reset-"), !keep.contains(ident) else { return false }
+            let rest = ident.dropFirst("reset-".count)
+            guard let dash = rest.firstIndex(of: "-") else { return false }
+            return rest[rest.index(after: dash)...] == profile
         }
     }
 }

@@ -617,6 +617,19 @@ enum UnitTests {
             equal(s.bestProfile()?.name, "G1")
         }
 
+        test("Reset alerts: one the usage no longer has is cancelled") {
+            let pending = ["reset-5h-Work", "reset-7d-Work", "reset-30d-Work", "reset-5h-Work-2",
+                           "reset-5h-Personal", "whats-new", "x-reset-5h-Work"]
+            // Signed out or an error: no limits, so every reset alert goes.
+            equal(ProfileStore.staleResetAlerts(pending, profile: "Work", keep: []),
+                  ["reset-5h-Work", "reset-7d-Work", "reset-30d-Work"])
+            // A plan change from 5h/7d to 30d keeps the new one only.
+            equal(ProfileStore.staleResetAlerts(pending, profile: "Work", keep: ["reset-30d-Work"]),
+                  ["reset-5h-Work", "reset-7d-Work"])
+            equal(ProfileStore.staleResetAlerts(pending, profile: "Work-2", keep: []), ["reset-5h-Work-2"])
+            equal(ProfileStore.resetAlertID(tag: "30d", profile: "Gpt Free"), "reset-30d-Gpt Free")
+        }
+
         test("Links: a claude:// link only goes to Claude profiles") {
             let s = ProfileStore(live: false)
             s.profiles = [Profile(name: "C1", dataDir: "/tmp/C1", colorName: "blue"),

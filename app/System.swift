@@ -127,6 +127,15 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     func cancel(_ identifiers: [String]) {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: identifiers)
     }
+
+    // Cancels the pending notifications `stale` picks out of all pending ones.
+    func cancelPending(_ stale: @escaping ([String]) -> [String]) {
+        let c = UNUserNotificationCenter.current()
+        c.getPendingNotificationRequests { reqs in
+            let ids = stale(reqs.map(\.identifier))
+            if !ids.isEmpty { c.removePendingNotificationRequests(withIdentifiers: ids) }
+        }
+    }
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
         done([.banner, .sound])
