@@ -129,6 +129,30 @@ touch -t 200001010000 "$launcher"
 setup --if-needed >/dev/null 2>&1
 check "setup --if-needed skips when current" test "$(stat -f %Sm -t %Y "$launcher")" = 2000
 
+# ---- profile names ----------------------------------------------------------
+
+profiles="$sandbox/Library/Application Support/Lanes/profiles"
+lanes() { HOME="$sandbox" LANES_WATCH_LABEL="$label" LANES_FROM_CHOOSER=1 zsh bin/lanes "$@" }
+fails_with() { local msg="$1" out; shift; out=$(lanes "$@" 2>&1) && return 1; [[ "$out" == *"$msg"* ]] }
+says() { local msg="$1"; shift; [[ "$(lanes "$@" 2>&1)" == *"$msg"* ]] }
+color_is() { test "$(cat "$profiles/$1/.lanes-color")" = "$2" }
+
+check "add refuses Default" fails_with "is your main Claude" add DEFAULT
+check "add joins an unquoted name" lanes add client acme --color blue
+check "  into one profile, with its color" color_is "Client Acme" blue
+check "add takes a dash name after --" lanes add --color green -- -work
+check "  as a profile" color_is Work green
+check "add refuses an unknown option" fails_with "Unknown option '--colour'" add work --colour blue
+check "remove refuses an unquoted name" fails_with "quote a name" remove client acme
+check "  and keeps the profile" test -d "$profiles/Client Acme"
+check "launch suggests quoting a name" fails_with 'lanes launch "client acme"' launch client acme
+check "launch --best with extras is a usage error" fails_with "Usage: lanes launch" launch --best now
+check "color takes an unquoted name" lanes color client acme teal
+check "  and sets it" color_is "Client Acme" teal
+mkdir -p "$profiles/Default"
+check "an old Default profile is told to rename" says "<New Name>" color default red
+rm -rf "$profiles/Default"
+
 # ---- the DMG, the curl installer and `lanes update` -------------------------
 
 check "dmg verifies" hdiutil verify -quiet build/Lanes.dmg

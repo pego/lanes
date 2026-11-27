@@ -306,7 +306,7 @@ final class ProfileStore: ObservableObject {
     }
 
     func add(_ name: String, color: String) {
-        callCdp(["add", name, "--color", color])
+        callCdp(["add", "--color", color, "--", name])
     }
 
     func setColor(_ p: Profile, color: String) {
