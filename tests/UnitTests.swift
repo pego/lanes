@@ -578,6 +578,8 @@ enum UnitTests {
             equal(claude.ww, nil)
             let e = JSONEncoder()
             e.dateEncodingStrategy = .secondsSince1970
+            // Sorted keys: JSONEncoder's key order otherwise varies run to run.
+            e.outputFormatting = .sortedKeys
             equal(try e.encode(claude), try e.encode(UsageSample(t: t0, h: 1, w: 2)))
             expect(!String(decoding: try e.encode(claude), as: UTF8.self).contains("hw"))
             let free = UsageSample(t: t0, h: 40, w: nil, hWindow: 30 * 86400, wWindow: nil)
