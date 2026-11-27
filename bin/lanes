@@ -608,14 +608,14 @@ ensure_clone() {
     reclone=1
   elif [[ "$ov" != "?" && "$cv" != "?" ]] && version_lt "$cv" "$ov"; then
     reclone=1
-  elif [[ "$cv" == "$ov" && "$color" != "orange" ]] && ! has_custom_icon "$clone"; then
+  elif [[ "$cv" == "$ov" && ( "$color" != "orange" || "$provider" != "claude" ) ]] && ! has_custom_icon "$clone"; then
     reclone=1
   fi
 
   # Claude's updater can replace the clone in place as root (seen on
   # 2.26454.2), leaving a bundle we can neither refresh nor re-icon; the rm
   # would fail file by file and the launch would die silently.
-  if [[ -d "$clone" ]] && { (( reclone )) || { [[ "$color" != "orange" ]] && ! has_custom_icon "$clone" } }; then
+  if [[ -d "$clone" ]] && { (( reclone )) || { [[ "$color" != "orange" || "$provider" != "claude" ]] && ! has_custom_icon "$clone" } }; then
     [[ -z "$(find "$clone" ! -user "$USER" -print -quit 2>/dev/null)" ]] ||
       err "Profile app clone is not owned by you ($(provider_value "$provider" name)'s updater ran as root). Fix: sudo rm -rf '$clone'"
   fi
@@ -626,7 +626,7 @@ ensure_clone() {
     mkdir -p "${clone:h}"
     /bin/cp -Rc "$claude_app" "$clone" 2>/dev/null || /bin/cp -R "$claude_app" "$clone"
     apply_clone_icon "$claude_app" "$clone" "$color" "$provider"
-  elif [[ "$color" != "orange" ]] && ! has_custom_icon "$clone"; then
+  elif [[ "$color" != "orange" || "$provider" != "claude" ]] && ! has_custom_icon "$clone"; then
     # Clone is at/ahead of /Applications (self-updated) — keep the newer bundle
     # intact and only restore the color the update dropped.
     apply_clone_icon "$claude_app" "$clone" "$color" "$provider"
