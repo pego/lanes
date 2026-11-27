@@ -163,6 +163,15 @@ final class ProfileStore: ObservableObject {
     init(live: Bool = true) {
         self.live = live
         guard live else { return }
+        // Shown once, and not retried automatically this session; cleared
+        // so a later launch may try again (a passing hiccup shouldn't stick).
+        if let attempted = updateAttempt {
+            updateAttempt = nil
+            if versionLessThan(appVersion, attempted) {
+                failedUpdate = attempted
+                updateError = Self.updateLogError() ?? "The update to \(attempted) didn't finish."
+            }
+        }
         refresh()
         timers = [Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             self?.refreshRunning()
@@ -262,9 +271,14 @@ final class ProfileStore: ObservableObject {
             if let r = line.range(of: "--user-data-dir=") {
                 let rest = String(line[r.upperBound...])
                 // The whole path, not a prefix: "Work" must not match "Workshop".
-                for p in profiles {
-                    if let d = p.dataDir, rest == d || rest.hasPrefix(d + " ") { found.insert(p.id) }
-                }
+                // ps joins argv with spaces, so "Client Acme" also starts with
+                // ".../Client ": a flag must come next, and the longest
+                // matching data dir is the owner. Mirrors owning_data_dir in
+                // bin/lanes.
+                let owner = profiles
+                    .filter { p in p.dataDir.map { rest == $0 || rest.hasPrefix($0 + " -") } ?? false }
+                    .max { ($0.dataDir?.count ?? 0) < ($1.dataDir?.count ?? 0) }
+                if let owner { found.insert(owner.id) }
             } else if line.contains("Claude.app/Contents/MacOS/Claude") {
                 found.insert("Default")
             }

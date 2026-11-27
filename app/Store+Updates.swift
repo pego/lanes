@@ -5,6 +5,16 @@ import AppKit
 
 extension ProfileStore {
     static let whatsNewSinceKey = "whatsNewSince"
+    static let updateLog = NSHomeDirectory() + "/Library/Caches/Lanes/update.log"
+
+    // The version an update was last started for, kept across launches:
+    // `lanes update` quits this app, so a failure after that never reaches
+    // the terminationHandler. Still being older than it on the next launch
+    // means it failed, and auto-update must not quit the app again for it.
+    var updateAttempt: String? {
+        get { UserDefaults.standard.string(forKey: "updateAttempt") }
+        set { UserDefaults.standard.set(newValue, forKey: "updateAttempt") }
+    }
 
     var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
@@ -62,13 +72,18 @@ extension ProfileStore {
         let target = availableUpdate
         isUpdating = true
         updateError = nil
-        let logDir = NSHomeDirectory() + "/Library/Caches/Lanes"
-        let logPath = logDir + "/update.log"
-        try? FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
+        let logPath = Self.updateLog
+        try? FileManager.default.createDirectory(atPath: (logPath as NSString).deletingLastPathComponent,
+                                                 withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: logPath, contents: nil)
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
         p.arguments = [lanes, "update", "--relaunch"]
+        // The version seen here, not whatever the script would look up: the
+        // next launch compares itself against it (see updateAttempt).
+        if let target {
+            p.environment = ProcessInfo.processInfo.environment.merging(["LANES_LATEST": target]) { $1 }
+        }
         p.standardInput = FileHandle.nullDevice
         let log = FileHandle(forWritingAtPath: logPath)
         p.standardOutput = log ?? FileHandle.nullDevice
@@ -77,6 +92,9 @@ extension ProfileStore {
         // quit and the new version opens.
         p.terminationHandler = { proc in
             DispatchQueue.main.async {
+                // Seen here, so this session's failedUpdate covers it; the
+                // next launch may retry (a network blip shouldn't stick).
+                self.updateAttempt = nil
                 self.isUpdating = false
                 // Still running, yet the bundle holds another version: the
                 // swap happened but this process was never quit. Restart.
@@ -87,18 +105,24 @@ extension ProfileStore {
                 }
                 if proc.terminationStatus != 0 {
                     self.failedUpdate = target
-                    let detail = (try? String(contentsOfFile: logPath, encoding: .utf8))?
-                        .split(separator: "\n").last { $0.hasPrefix("✗") }
-                        .map { String($0.dropFirst(2)) }
-                    self.updateError = detail ?? "The update failed. Details: ~/Library/Caches/Lanes/update.log"
+                    self.updateError = Self.updateLogError() ?? "The update failed."
                 }
             }
         }
+        updateAttempt = target
         do { try p.run() } catch {
+            updateAttempt = nil
             isUpdating = false
             failedUpdate = target
             updateError = error.localizedDescription
         }
+    }
+
+    // The last error `lanes update` logged, with a pointer to the full log.
+    static func updateLogError() -> String? {
+        guard let line = (try? String(contentsOfFile: updateLog, encoding: .utf8))?
+            .split(separator: "\n").last(where: { $0.hasPrefix("✗") }) else { return nil }
+        return String(line.dropFirst(2)) + " Details: ~/Library/Caches/Lanes/update.log"
     }
 
     // Quits and reopens this app from its bundle path: a detached shell
