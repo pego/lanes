@@ -86,7 +86,7 @@ enum Snapshots {
         let now = Date(), step: TimeInterval = 600
         let cal = Calendar.current
         var out: [UsageSample] = []
-        var t = now - LimitWindow.week + step
+        var t = now - ClaudeLimit.sevenDayWindow + step
         while t <= now {
             let hour = Double(cal.component(.hour, from: t)) + Double(cal.component(.minute, from: t)) / 60
             let day = Double(cal.ordinality(of: .day, in: .era, for: t) ?? 0)
@@ -97,7 +97,7 @@ enum Snapshots {
                 let ramp = min(1, (hour - start) / 3.2)
                 h = peak * vary * (i == 0 ? 1 : 0.7) * pow(ramp, 0.8)
             }
-            let progress = 1 - (now.timeIntervalSince(t) / LimitWindow.week)
+            let progress = 1 - (now.timeIntervalSince(t) / ClaudeLimit.sevenDayWindow)
             out.append(UsageSample(t: t, h: min(100, h), w: weekNow * progress))
             t += step
         }

@@ -427,7 +427,7 @@ struct LaneDetail: View {
                                     }
                                     .font(.caption)
                                     LaneMeter(value: m.used, tint: tint,
-                                              pace: elapsedFraction(reset: m.reset, window: LimitWindow.week), height: 4)
+                                              pace: elapsedFraction(reset: m.reset, window: m.window), height: 4)
                                 }
                                 .help(resetText(m.reset).map { "\(m.label): its own weekly limit, \($0)." } ?? "")
                             }

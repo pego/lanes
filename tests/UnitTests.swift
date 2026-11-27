@@ -297,12 +297,12 @@ enum UnitTests {
         test("Forecast.pace projects the recent rate to the reset") {
             let reset = now.addingTimeInterval(2 * 3600)
             // 10% → 30% over the last hour: 20%/h, two hours left.
-            let p = Forecast.pace(value: 30, reset: reset, window: LimitWindow.fiveHour,
+            let p = Forecast.pace(value: 30, reset: reset, window: ClaudeLimit.fiveHourWindow,
                                   samples: [(now.addingTimeInterval(-3600), 10)], lookback: 3600, minSpan: 900, now: now)
             equal(p.map { ($0.atReset * 10).rounded() / 10 }, 70)
             equal(p?.runsOutAt, nil)
             // 40%/h from 60%: out in an hour, before the reset.
-            let fast = Forecast.pace(value: 60, reset: reset, window: LimitWindow.fiveHour,
+            let fast = Forecast.pace(value: 60, reset: reset, window: ClaudeLimit.fiveHourWindow,
                                      samples: [(now.addingTimeInterval(-3600), 20)], lookback: 3600, minSpan: 900, now: now)
             equal(fast?.atReset, 100)
             equal(fast?.runsOutAt.map { Int($0.timeIntervalSince(now)) }, 3600)
@@ -310,16 +310,154 @@ enum UnitTests {
 
         test("Forecast.pace needs enough history, in this window") {
             let reset = now.addingTimeInterval(2 * 3600)
-            equal(Forecast.pace(value: 30, reset: reset, window: LimitWindow.fiveHour,
+            equal(Forecast.pace(value: 30, reset: reset, window: ClaudeLimit.fiveHourWindow,
                                 samples: [(now.addingTimeInterval(-300), 10)], lookback: 3600, minSpan: 900, now: now), nil)
             // A reading from before the window started (reset - 5h) doesn't count.
-            equal(Forecast.pace(value: 30, reset: now.addingTimeInterval(4.9 * 3600), window: LimitWindow.fiveHour,
+            equal(Forecast.pace(value: 30, reset: now.addingTimeInterval(4.9 * 3600), window: ClaudeLimit.fiveHourWindow,
                                 samples: [(now.addingTimeInterval(-1800), 10)], lookback: 3600, minSpan: 900, now: now), nil)
             // Usage going down (a reset in between) counts as none.
-            equal(Forecast.pace(value: 30, reset: reset, window: LimitWindow.fiveHour,
+            equal(Forecast.pace(value: 30, reset: reset, window: ClaudeLimit.fiveHourWindow,
                                 samples: [(now.addingTimeInterval(-3600), 80)], lookback: 3600, minSpan: 900, now: now)?.atReset, 30)
-            equal(Forecast.pace(value: 100, reset: reset, window: LimitWindow.fiveHour,
+            equal(Forecast.pace(value: 100, reset: reset, window: ClaudeLimit.fiveHourWindow,
                                 samples: [(now.addingTimeInterval(-3600), 10)], lookback: 3600, minSpan: 900, now: now), nil)
+        }
+
+        // MARK: limits as data
+
+        test("Claude's usage is the 5-hour + weekly pair, in that order") {
+            let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+            var u = Usage(fiveHour: 42, sevenDay: 17, fiveHourReset: t0 + 3600, sevenDayReset: t0 + 86400)
+            equal(u.limits.map(\.key), ["five_hour", "seven_day"])
+            equal(u.limits.map(\.label), ["5 hours", "Week"])
+            equal(u.limits.map(\.window), [5 * 3600, 7 * 86400])
+            equal(u.limits.map(\.tag), ["5h", "7d"])
+            equal(u.limits.map(\.compactLabel), ["5h", "Week"])
+            equal(u.limits.map(\.noun), ["5-hour limit", "weekly limit"])
+            equal(u.primary?.used, 42)
+            equal(u.secondary?.used, 17)
+            u.sevenDayReset = nil
+            equal(u.limit("seven_day")?.reset, nil)
+            equal(u.fiveHourReset, t0 + 3600)
+            // Both always there, even unknown: that's what hasNoData and the
+            // snapshot's columns rely on.
+            let none = Usage(fiveHour: nil, sevenDay: nil)
+            equal(none.limits.count, 2)
+            expect(none.hasNoData)
+            // A Claude limit set on usage that lacks it lands in window order.
+            var partial = Usage(limits: [ClaudeLimit.sevenDay(5, reset: nil)])
+            partial.fiveHour = 9
+            equal(partial.limits.map(\.key), ["five_hour", "seven_day"])
+        }
+
+        test("A single 30-day window is a full set of limits") {
+            let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+            let month: TimeInterval = 30 * 86400
+            let l = UsageLimit(key: "primary", label: "30 days", used: 40, reset: t0 + 10 * 86400, window: month)
+            let u = Usage(limits: [l])
+            equal(u.primary?.key, "primary")
+            equal(u.secondary, nil)
+            expect(!u.hasNoData)
+            equal(l.tag, "30d")
+            equal(l.compactLabel, "30d")
+            equal(l.noun, "30-day limit")
+            equal(UsageLimit.window(ofTag: l.tag), month)
+            // 20 of its 30 days have passed.
+            equal(elapsedFraction(reset: l.reset, window: month, now: t0).map { ($0 * 1000).rounded() }, 667)
+            // Forecast: 10% → 40% over the last 3 days, 10 days left.
+            let p = Forecast.pace(l, samples: [(t0 - 3 * 86400, 10)], now: t0)
+            equal(p?.atReset, 100)
+            equal(p?.runsOutAt.map { Int($0.timeIntervalSince(t0)) }, 6 * 86400)
+            // History holds it as the first limit.
+            equal(UsageSample(t: t0, h: 40, w: nil).value(at: 0), 40)
+
+            // It ranks and publishes like Claude's first limit; no second column.
+            let s = ProfileStore(live: false)
+            s.profiles = ["Free", "Plus"].map { Profile(name: $0, dataDir: "/tmp/\($0)", colorName: "blue") }
+            s.usage = ["Free": u, "Plus": Usage(fiveHour: 60, sevenDay: 10)]
+            equal(s.bestProfile()?.name, "Free")
+            let e = s.snapshotEntries()[0]
+            equal(e.fiveHour, 40)
+            equal(e.sevenDay, nil)
+            equal(e.fiveHourReset, l.reset)
+            equal(ProfileStore.usageTSV([e], updated: t0),
+                  "# updated 1790000000\nFree\tblue\t0\t40\t1790864000\t\t\t\t\t\t\t\n")
+        }
+
+        test("Window timings come out exactly as Claude's old constants") {
+            let five = WindowTiming(window: ClaudeLimit.fiveHourWindow)
+            let week = WindowTiming(window: ClaudeLimit.sevenDayWindow)
+            // Forecast lookback and minimum history: 1 h / 15 min, 1 day / 3 h.
+            equal([five.lookback, five.minSpan], [3600, 15 * 60])
+            equal([week.lookback, week.minSpan], [86400, 3 * 3600])
+            // Pace alerts: within 45 min with 15 to spare, within a day with 6 h to spare.
+            equal([five.paceSoon, five.paceSpare], [45 * 60, 15 * 60])
+            equal([week.paceSoon, week.paceSpare], [86400, 6 * 3600])
+            // Other windows scale between and beyond, in order.
+            let day = WindowTiming(window: 86400), month = WindowTiming(window: 30 * 86400)
+            for (lo, mid, hi) in [(five.lookback, day.lookback, week.lookback), (five.minSpan, day.minSpan, week.minSpan),
+                                  (five.paceSoon, day.paceSoon, week.paceSoon), (five.paceSpare, day.paceSpare, week.paceSpare)] {
+                expect(lo < mid && mid < hi, "\(lo) < \(mid) < \(hi)")
+            }
+            expect(month.lookback > week.lookback && month.minSpan > week.minSpan)
+            expect(month.minSpan < month.lookback && month.paceSpare < month.paceSoon)
+        }
+
+        test("Forecast and pace alerts per limit match the old fixed rules") {
+            let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+            // The per-limit forecast is the old call with the old constants.
+            let cases: [(UsageLimit, TimeInterval, TimeInterval)] = [
+                (ClaudeLimit.fiveHour(30, reset: t0 + 7200), 3600, 900),
+                (ClaudeLimit.sevenDay(30, reset: t0 + 3 * 86400), 86400, 10800)]
+            for (l, lookback, minSpan) in cases {
+                for ago: TimeInterval in [600, 900, 1800, 3600, 3 * 3600, 6 * 3600, 86400, 2 * 86400] {
+                    let samples: [(Date, Double)] = [(t0 - ago, 10)]
+                    equal(Forecast.pace(l, samples: samples, now: t0),
+                          Forecast.pace(value: l.used, reset: l.reset, window: l.window, samples: samples,
+                                        lookback: lookback, minSpan: minSpan, now: t0))
+                }
+            }
+            // 5 hours: runs out within 45 min, at least 15 min before the reset.
+            let five = ClaudeLimit.fiveHour(50, reset: nil)
+            func due(_ l: UsageLimit, out: TimeInterval, reset: TimeInterval) -> Bool {
+                ProfileStore.paceAlertDue(l, runsOut: t0 + out, reset: t0 + reset, now: t0)
+            }
+            expect(due(five, out: 45 * 60, reset: 60 * 60))
+            expect(!due(five, out: 45 * 60 + 1, reset: 2 * 3600))
+            expect(!due(five, out: 30 * 60, reset: 30 * 60 + 14 * 60))
+            // A week: within a day, at least 6 h before the reset.
+            let week = ClaudeLimit.sevenDay(50, reset: nil)
+            expect(due(week, out: 86400, reset: 86400 + 6 * 3600))
+            expect(!due(week, out: 86400 + 1, reset: 3 * 86400))
+            expect(!due(week, out: 3600, reset: 3600 + 6 * 3600 - 1))
+        }
+
+        test("Limit tags keep naming the alert state as before") {
+            equal(UsageLimit.window(ofTag: "5h"), 5 * 3600)
+            equal(UsageLimit.window(ofTag: "7d"), 7 * 86400)
+            equal(UsageLimit.window(ofTag: "90m"), 90 * 60)
+            equal(UsageLimit.window(ofTag: ""), nil)
+            equal(UsageLimit.window(ofTag: "xh"), nil)
+            equal(UsageLimit(key: "k", label: "", used: nil, reset: nil, window: 90 * 60).noun, "90-minute limit")
+            // Muting from a notification uses that limit's window.
+            let s = ProfileStore(live: false)
+            s.alertMutedUntil = [:]
+            let month: TimeInterval = 30 * 86400
+            s.usage = ["Free": Usage(limits: [UsageLimit(key: "p", label: "30 days", used: 90, reset: nil, window: month)])]
+            let before = Date()
+            s.handleNotification(action: AlertAction.mute, info: ["profile": "Free", "limit": "30d"])
+            expect((s.alertMutedUntil["Free/30d"] ?? 0) >= before.addingTimeInterval(month).timeIntervalSince1970)
+            s.alertMutedUntil = [:]
+        }
+
+        test("merge: an app's own record keeps its own reset times") {
+            let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+            let failed = Usage(error: "HTTP 500")
+            let l = UsageLimit(key: "p", label: "30 days", used: 33, reset: t0 + 86400, window: 30 * 86400)
+            let u = ProfileStore.merge(fresh: failed, previous: nil, previousAt: nil,
+                                       local: LocalReading(t: t0 - 60, limits: [l]), now: t0)
+            equal(u.primary?.used, 33)
+            equal(u.primary?.reset, t0 + 86400)
+            expect(u.fromLocalRecord)
         }
 
         test("UsageHistory keeps one reading per ~10 minutes, for 30 days") {
@@ -384,10 +522,10 @@ enum UnitTests {
             expect(!s.isMuted("Work/5h", now: reset.addingTimeInterval(1)))
             // No reset known (or already past): one whole window.
             let now = Date()
-            s.mute("Work/7d", until: now.addingTimeInterval(-10), window: LimitWindow.week, now: now)
-            equal(s.alertMutedUntil["Work/7d"], now.addingTimeInterval(LimitWindow.week).timeIntervalSince1970)
+            s.mute("Work/7d", until: now.addingTimeInterval(-10), window: ClaudeLimit.sevenDayWindow, now: now)
+            equal(s.alertMutedUntil["Work/7d"], now.addingTimeInterval(ClaudeLimit.sevenDayWindow).timeIntervalSince1970)
             // Expired mutes are dropped.
-            s.mute("Studio/5h", until: nil, window: 60, now: now.addingTimeInterval(LimitWindow.week + 1))
+            s.mute("Studio/5h", until: nil, window: 60, now: now.addingTimeInterval(ClaudeLimit.sevenDayWindow + 1))
             equal(s.alertMutedUntil["Work/7d"], nil)
             s.alertMutedUntil = [:]
         }

@@ -251,7 +251,8 @@ struct LaneNote: View {
     }
 }
 
-// Shows a usage pair when there are numbers, otherwise why there aren't.
+// Shows a meter per limit (Claude's pair) when there are numbers, otherwise
+// why there aren't.
 struct UsagePair: View {
     let usage: Usage?
     let tint: Color
@@ -266,10 +267,10 @@ struct UsagePair: View {
         if let u = usage, u.error == nil, !u.hasNoData {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .top, spacing: spacing) {
-                    MeterCell(label: "5 hours", value: u.fiveHour, reset: u.fiveHourReset,
-                              window: LimitWindow.fiveHour, tint: tint, forecast: u.fiveHourPace, compact: compact)
-                    MeterCell(label: "Week", value: u.sevenDay, reset: u.sevenDayReset,
-                              window: LimitWindow.week, tint: tint, forecast: u.sevenDayPace, compact: compact)
+                    ForEach(u.limits) { l in
+                        MeterCell(label: l.label, value: l.used, reset: l.reset,
+                                  window: l.window, tint: tint, forecast: l.pace, compact: compact)
+                    }
                 }
                 if let since = u.staleSince {
                     StaleNote(since: since, error: u.staleError, fromLocalRecord: u.fromLocalRecord, provider: provider)

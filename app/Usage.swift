@@ -7,16 +7,12 @@ import Foundation
 
 // One profile's usage, as its provider last reported it.
 struct Usage: Equatable {
-    var fiveHour: Double?   // percent of the 5-hour limit used
-    var sevenDay: Double?   // percent of the weekly limit used
-    var fiveHourReset: Date?
-    var sevenDayReset: Date?
+    // Its limits, shortest window first; each with where it's heading at the
+    // current rate (see Forecast).
+    var limits: [UsageLimit] = []
     var error: String?
     // Weekly limits for single model families, when the account has them.
     var models: [ModelLimit] = []
-    // Where each limit is heading at the current rate (see Forecast).
-    var fiveHourPace: Pace? = nil
-    var sevenDayPace: Pace? = nil
     // The last check failed (staleError), so these are the numbers from
     // staleSince: still shown, for up to an hour, rather than blanked.
     var staleError: String? = nil
@@ -29,13 +25,23 @@ struct Usage: Equatable {
     var formatChanged = false
 
     var needsSignIn: Bool { error == "not signed in" || error == "session expired" }
-    var hasNoData: Bool { error == nil && fiveHour == nil && sevenDay == nil }
+    var hasNoData: Bool { error == nil && limits.allSatisfy { $0.used == nil } }
+
+    // The first limit decides which profile has the most room, fills the
+    // menu bar glyph and goes in the snapshot's first column pair; the
+    // second breaks ties and goes in the second pair (usage.json, usage.tsv,
+    // history).
+    var primary: UsageLimit? { limits.first }
+    var secondary: UsageLimit? { limits.count > 1 ? limits[1] : nil }
+
+    func limit(_ key: String) -> UsageLimit? { limits.first { $0.key == key } }
 }
 
-// Where a limit is heading if usage keeps its recent rate.
-struct Pace: Equatable {
-    var atReset: Double     // projected percent when the window resets (capped at 100)
-    var runsOutAt: Date?    // when it hits 100%, if that's before the reset
+// A reading an app recorded itself (Provider.localUsage): the fallback when
+// its service can't be reached.
+struct LocalReading: Equatable {
+    var t: Date
+    var limits: [UsageLimit]
 }
 
 // "resets in 2h 10m" within a day, "resets Mon 09:30" beyond that.

@@ -57,7 +57,7 @@ protocol Provider {
     func fetchUsage(dataDir: String) async throws -> Usage
     // The newest reading the app recorded itself, if it keeps any: the
     // fallback when the service can't be reached.
-    func localUsage(dataDir: String) -> LocalUsage.Reading?
+    func localUsage(dataDir: String) -> LocalReading?
 }
 
 extension Provider {

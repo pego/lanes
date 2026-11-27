@@ -52,10 +52,73 @@ func usageColor(_ value: Double?, tint: Color) -> Color {
     return tint
 }
 
-// The two rolling limits claude.ai reports, and how long each window runs.
-enum LimitWindow {
-    static let fiveHour: TimeInterval = 5 * 3600
+// One rolling usage limit, as a provider reports it: how much of it is used,
+// when it resets and how long its window runs. A provider reports one or
+// several, in any lengths, shortest window first: Claude a 5-hour and a
+// weekly one.
+struct UsageLimit: Equatable, Identifiable {
+    var key: String          // the provider's name for it: "five_hour"
+    var label: String        // above its meter: "5 hours"
+    var used: Double?        // percent
+    var reset: Date?
+    var window: TimeInterval
+    // Where it's heading at the current rate (see Forecast).
+    var pace: Pace? = nil
+    var id: String { key }
+
+    // Its name in alert bookkeeping ("Work/5h") and notifications: "5h", "7d".
+    var tag: String { let s = Self.span(window); return "\(s.n)\(s.unit)" }
+    // In tight spots (the widget): "5h", "Week".
+    var compactLabel: String { window == Self.week ? "Week" : tag }
+    // In sentences: "5-hour limit", "weekly limit".
+    var noun: String {
+        if window == Self.week { return "weekly limit" }
+        let s = Self.span(window)
+        return "\(s.n)-\(["m": "minute", "h": "hour", "d": "day"][s.unit]!) limit"
+    }
+
     static let week: TimeInterval = 7 * 86400
+
+    // A window in whole days, else whole hours, else minutes.
+    static func span(_ w: TimeInterval) -> (n: Int, unit: String) {
+        let s = Int(w.rounded())
+        if s >= 86400, s % 86400 == 0 { return (s / 86400, "d") }
+        if s >= 3600, s % 3600 == 0 { return (s / 3600, "h") }
+        return (max(1, s / 60), "m")
+    }
+
+    // The window of a tag ("5h" → 5 hours), for a notification that outlived
+    // its usage reading.
+    static func window(ofTag tag: String) -> TimeInterval? {
+        guard let unit = tag.last, let n = Double(tag.dropLast()), n > 0 else { return nil }
+        switch unit {
+        case "m": return n * 60
+        case "h": return n * 3600
+        case "d": return n * 86400
+        default: return nil
+        }
+    }
+}
+
+// Where a limit is heading if usage keeps its recent rate.
+struct Pace: Equatable {
+    var atReset: Double     // projected percent when the window resets (capped at 100)
+    var runsOutAt: Date?    // when it hits 100%, if that's before the reset
+}
+
+// Claude's two limits. Here rather than with ClaudeProvider because
+// usage.json and usage.tsv have columns for exactly these two, and the
+// widget, which only reads usage.json, draws them.
+enum ClaudeLimit {
+    static let fiveHourWindow: TimeInterval = 5 * 3600
+    static let sevenDayWindow: TimeInterval = UsageLimit.week
+
+    static func fiveHour(_ used: Double?, reset: Date?, pace: Pace? = nil) -> UsageLimit {
+        UsageLimit(key: "five_hour", label: "5 hours", used: used, reset: reset, window: fiveHourWindow, pace: pace)
+    }
+    static func sevenDay(_ used: Double?, reset: Date?, pace: Pace? = nil) -> UsageLimit {
+        UsageLimit(key: "seven_day", label: "Week", used: used, reset: reset, window: sevenDayWindow, pace: pace)
+    }
 }
 
 // How far through its window a limit is (0…1), worked out from its reset
@@ -114,6 +177,8 @@ struct ModelLimit: Codable, Equatable, Identifiable {
     var used: Double      // percent
     var reset: Date?
     var id: String { key }
+    // Not stored: every one is weekly.
+    var window: TimeInterval { ClaudeLimit.sevenDayWindow }
 }
 
 // Written by the app after every usage refresh; read by the widget (sandboxed,
@@ -139,6 +204,10 @@ struct UsageSnapshot: Codable {
     var updated: Date
     var profiles: [Entry]
 
+    // The file has a column pair for two limits: a profile's first (shortest
+    // window) in fiveHour…, its second in sevenDay…. Named after Claude's,
+    // whose windows they are: the file doesn't record windows.
+
     // The real home, not the sandbox container NSHomeDirectory() returns in the widget.
     static var directory: String {
         let home = getpwuid(getuid()).map { String(cString: $0.pointee.pw_dir) } ?? NSHomeDirectory()
@@ -158,5 +227,12 @@ struct UsageSnapshot: Codable {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .iso8601
         return try? d.decode(UsageSnapshot.self, from: data)
+    }
+}
+
+extension UsageSnapshot.Entry {
+    // The two limits the file has columns for, as limits (see UsageSnapshot).
+    var meters: [UsageLimit] {
+        [ClaudeLimit.fiveHour(fiveHour, reset: fiveHourReset), ClaudeLimit.sevenDay(sevenDay, reset: sevenDayReset)]
     }
 }

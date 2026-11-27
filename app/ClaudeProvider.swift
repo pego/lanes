@@ -25,11 +25,60 @@ struct ClaudeProvider: Provider {
     let downloadURL = URL(string: "https://claude.ai/download")!
 
     func fetchUsage(dataDir: String) async throws -> Usage { try await fetchClaudeUsage(dataDir: dataDir) }
-    func localUsage(dataDir: String) -> LocalUsage.Reading? { LocalUsage.latest(dataDir: dataDir) }
+    func localUsage(dataDir: String) -> LocalReading? { LocalUsage.latest(dataDir: dataDir) }
 
     private static let installed = installedApp(Providers.claude.appCandidates)
     // Read once: every lane, sheet and preview draws it, tinted per profile.
     private static let appIcon = NSWorkspace.shared.icon(forFile: installed)
+}
+
+// MARK: Claude's limits
+
+// Usage in Claude's terms: its 5-hour and weekly limits by name. Claude's
+// usage always carries both, in that order, even when one is unknown.
+extension Usage {
+    init(fiveHour: Double?, sevenDay: Double?, fiveHourReset: Date? = nil, sevenDayReset: Date? = nil,
+         error: String? = nil, models: [ModelLimit] = [], fiveHourPace: Pace? = nil, sevenDayPace: Pace? = nil,
+         formatChanged: Bool = false) {
+        self.init(limits: [ClaudeLimit.fiveHour(fiveHour, reset: fiveHourReset, pace: fiveHourPace),
+                           ClaudeLimit.sevenDay(sevenDay, reset: sevenDayReset, pace: sevenDayPace)],
+                  error: error, models: models, formatChanged: formatChanged)
+    }
+
+    private mutating func update(_ key: String, _ change: (inout UsageLimit) -> Void) {
+        if let i = limits.firstIndex(where: { $0.key == key }) { change(&limits[i]); return }
+        var l = key == "five_hour" ? ClaudeLimit.fiveHour(nil, reset: nil) : ClaudeLimit.sevenDay(nil, reset: nil)
+        change(&l)
+        limits.append(l)
+        limits.sort { $0.window < $1.window }
+    }
+
+    var fiveHour: Double? {
+        get { limit("five_hour")?.used }
+        set { update("five_hour") { $0.used = newValue } }
+    }
+    var sevenDay: Double? {
+        get { limit("seven_day")?.used }
+        set { update("seven_day") { $0.used = newValue } }
+    }
+    var fiveHourReset: Date? {
+        get { limit("five_hour")?.reset }
+        set { update("five_hour") { $0.reset = newValue } }
+    }
+    var sevenDayReset: Date? {
+        get { limit("seven_day")?.reset }
+        set { update("seven_day") { $0.reset = newValue } }
+    }
+    var fiveHourPace: Pace? { limit("five_hour")?.pace }
+    var sevenDayPace: Pace? { limit("seven_day")?.pace }
+}
+
+extension LocalReading {
+    init(t: Date, fiveHour: Double?, sevenDay: Double?) {
+        self.init(t: t, limits: [ClaudeLimit.fiveHour(fiveHour, reset: nil), ClaudeLimit.sevenDay(sevenDay, reset: nil)])
+    }
+    var fiveHour: Double? { limits.first { $0.key == "five_hour" }?.used }
+    var sevenDay: Double? { limits.first { $0.key == "seven_day" }?.used }
 }
 
 // "Opus" for "seven_day_opus".
@@ -270,11 +319,7 @@ private func writeUsageDebug(dataDir: String, raw: [[String: Any]]) {
 // there that's newer than Lanes' last one is better than nothing.
 // shortcut: undocumented, internal format; anything unexpected reads as nil.
 enum LocalUsage {
-    struct Reading: Equatable {
-        var t: Date
-        var fiveHour: Double?
-        var sevenDay: Double?
-    }
+    typealias Reading = LocalReading
 
     static func path(dataDir: String) -> String { dataDir + "/plan-usage-history.json" }
 

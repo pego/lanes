@@ -12,7 +12,7 @@ struct MenuBarLabel: View {
     var body: some View {
         let values = store.profiles.map { p -> Double? in
             guard let u = store.usage[p.id], u.error == nil else { return nil }
-            return u.fiveHour
+            return u.primary?.used
         }
         Image(nsImage: MenuBarGlyph.image(levels: values, percent: values.compactMap { $0 }.max()))
             // Always on screen, so it opens Settings for AppKit windows.
@@ -253,7 +253,8 @@ struct RoomiestCard: View {
     let open: () -> Void
 
     private var tint: Color { profile.color.swatch }
-    private var left: Int { max(0, 100 - Int((usage?.fiveHour ?? 0).rounded())) }
+    private var left: Int { max(0, 100 - Int((usage?.primary?.used ?? 0).rounded())) }
+    private var limitName: String { usage?.primary?.tag ?? "5h" }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -265,7 +266,7 @@ struct RoomiestCard: View {
                     .foregroundStyle(tint)
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
                     Text(profile.name).font(.system(size: 14, weight: .semibold)).lineLimit(1)
-                    Text("\(left)% of 5h left")
+                    Text("\(left)% of \(limitName) left")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }

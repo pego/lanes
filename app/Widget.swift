@@ -75,8 +75,8 @@ struct UsageWidgetView: View {
     private func content(_ snap: UsageSnapshot) -> some View {
         // Signed-in profiles first, busiest first: the ones worth watching.
         let rows = snap.profiles.sorted { a, b in
-            let x = a.error == nil ? (a.fiveHour ?? -1) : -2
-            let y = b.error == nil ? (b.fiveHour ?? -1) : -2
+            let x = a.error == nil ? (a.meters.first?.used ?? -1) : -2
+            let y = b.error == nil ? (b.meters.first?.used ?? -1) : -2
             return x > y
         }.prefix(maxRows)
         return VStack(alignment: .leading, spacing: family == .systemSmall ? 6 : 8) {
@@ -118,17 +118,18 @@ private struct SmallRow: View {
 
     var body: some View {
         let tint = ProfileColor.named(p.color).swatch
+        let first = p.meters.first
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 5) {
                 Capsule().fill(tint.opacity(p.running ? 1 : 0.4)).frame(width: 3, height: 11)
                 Text(p.name).font(.caption.weight(.semibold)).lineLimit(1)
                 Spacer(minLength: 2)
-                Text(statusText(p) ?? percent(p.fiveHour))
+                Text(statusText(p) ?? percent(first?.used))
                     .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
             }
-            if statusText(p) == nil {
-                LaneMeter(value: p.fiveHour, tint: tint,
-                          pace: elapsedFraction(reset: p.fiveHourReset, window: LimitWindow.fiveHour), height: 4)
+            if statusText(p) == nil, let first {
+                LaneMeter(value: first.used, tint: tint,
+                          pace: elapsedFraction(reset: first.reset, window: first.window), height: 4)
             }
         }
     }
@@ -150,8 +151,7 @@ private struct WideRow: View {
                 Text(status).font(.caption2).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
             } else {
-                column("5h", p.fiveHour, p.fiveHourReset, LimitWindow.fiveHour, tint)
-                column("Week", p.sevenDay, p.sevenDayReset, LimitWindow.week, tint)
+                ForEach(p.meters) { m in column(m.compactLabel, m.used, m.reset, m.window, tint) }
             }
         }
     }
