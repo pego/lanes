@@ -66,17 +66,26 @@ extension ProfileStore {
                                                  toOpenURLsWithScheme: scheme) { _ in }
     }
 
+    // The profiles a link may go to: those whose app owns its scheme. A
+    // claude:// sign-in token must never reach a ChatGPT clone.
+    func linkTargets(for url: URL) -> [Profile] {
+        guard let scheme = url.scheme?.lowercased() else { return [] }
+        return profiles.filter { $0.provider.linkScheme?.lowercased() == scheme }
+    }
+
     func route(_ url: URL) {
         refresh()
-        let live = profiles.filter { running.contains($0.id) }
+        let targets = linkTargets(for: url)
+        guard !targets.isEmpty else { return }
+        let live = targets.filter { running.contains($0.id) }
         if live.count == 1 { deliver(url, to: live[0]); return }
         // None running: pick which to start. Several: the frontmost-most-recently
         // one is preselected, so Return confirms the usual case.
-        let preselect = live.first { $0.id == lastActive }?.id ?? live.first?.id ?? profiles.first?.id
-        if let p = pickProfile(for: url, preselect: preselect) { deliver(url, to: p) }
+        let preselect = live.first { $0.id == lastActive }?.id ?? live.first?.id ?? targets.first?.id
+        if let p = pickProfile(for: url, among: targets, preselect: preselect) { deliver(url, to: p) }
     }
 
-    private func pickProfile(for url: URL, preselect: String?) -> Profile? {
+    private func pickProfile(for url: URL, among targets: [Profile], preselect: String?) -> Profile? {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Open this Claude link in which profile?"
@@ -85,7 +94,7 @@ extension ProfileStore {
         alert.informativeText = (where_.isEmpty ? "" : "claude://\(where_)\n\n")
             + "Sign-in links belong to the profile you clicked \"Log in\" in."
         let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 26), pullsDown: false)
-        for p in profiles {
+        for p in targets {
             let item = NSMenuItem(title: p.name + (running.contains(p.id) ? "" : "  (not running)"),
                                   action: nil, keyEquivalent: "")
             item.representedObject = p.id
@@ -98,7 +107,7 @@ extension ProfileStore {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn,
               let id = popup.selectedItem?.representedObject as? String else { return nil }
-        return profiles.first { $0.id == id }
+        return targets.first { $0.id == id }
     }
 
     private static func swatchImage(_ color: NSColor) -> NSImage {

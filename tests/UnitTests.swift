@@ -615,6 +615,16 @@ enum UnitTests {
             equal(s.bestProfile()?.name, "G1")
         }
 
+        test("Links: a claude:// link only goes to Claude profiles") {
+            let s = ProfileStore(live: false)
+            s.profiles = [Profile(name: "C1", dataDir: "/tmp/C1", colorName: "blue"),
+                          Profile(name: "G1", dataDir: "/tmp/G1", colorName: "blue", providerID: "chatgpt"),
+                          Profile(name: "C2", dataDir: "/tmp/C2", colorName: "blue")]
+            equal(s.linkTargets(for: URL(string: "claude://login/x?token=t")!).map(\.name), ["C1", "C2"])
+            equal(s.linkTargets(for: URL(string: "CLAUDE://x")!).map(\.name), ["C1", "C2"])
+            equal(s.linkTargets(for: URL(string: "codex://x")!).map(\.name), [])
+        }
+
         test("Window timings come out exactly as Claude's old constants") {
             let five = WindowTiming(window: ClaudeLimit.fiveHourWindow)
             let week = WindowTiming(window: ClaudeLimit.sevenDayWindow)
