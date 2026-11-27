@@ -57,12 +57,14 @@ func resetText(_ date: Date?) -> String? {
     return "resets " + clockText(date)
 }
 
-// "15:40" today, "Thu 15:40" on another day. English day names, like the rest
-// of the app, whatever the system locale.
-func clockText(_ date: Date) -> String {
+// "15:40" today, "Thu 15:40" on another day, "Dec 7 15:40" more than a week
+// away (only longer windows than Claude's get there). English names, like
+// the rest of the app, whatever the system locale.
+func clockText(_ date: Date, now: Date = Date()) -> String {
     let f = DateFormatter()
     f.locale = Locale(identifier: "en_US_POSIX")
-    f.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "EEE HH:mm"
+    f.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm"
+        : date.timeIntervalSince(now) > 7 * 86400 ? "MMM d HH:mm" : "EEE HH:mm"
     return f.string(from: date)
 }
 

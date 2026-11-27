@@ -49,10 +49,11 @@ extension ProfileStore {
     // ("Work/5h"), notification ids and userInfo, and by its noun ("5-hour
     // limit") in the text.
 
-    // Another profile that's a better bet: the one with the most room, if
-    // it has at least half its first (5-hour) limit left.
+    // Another profile of the same app that's a better bet: the one with the
+    // most room, if it has at least half its first (5-hour) limit left.
     func alternative(to id: String) -> Profile? {
-        guard let b = bestProfile(), b.id != id, let h = usage[b.id]?.primary?.used, h < 50 else { return nil }
+        let provider = profiles.first { $0.id == id }?.providerID ?? Providers.defaultID
+        guard let b = bestProfile(provider: provider), b.id != id, let h = usage[b.id]?.primary?.used, h < 50 else { return nil }
         return b
     }
 
@@ -189,7 +190,8 @@ extension ProfileStore {
         Notifier.shared.setUp()
         let busiest = profiles.max { (usage[$0.id]?.primary?.used ?? -1) < (usage[$1.id]?.primary?.used ?? -1) }
         let id = busiest?.id ?? "Default"
-        let best = alternative(to: id) ?? profiles.first { $0.id != id }
+        let provider = busiest?.providerID ?? Providers.defaultID
+        let best = alternative(to: id) ?? profiles.first { $0.id != id && $0.providerID == provider }
         let limit = busiest.flatMap { usage[$0.id]?.primary } ?? ClaudeLimit.fiveHour(nil, reset: nil)
         Notifier.shared.post(title: "Test: \(id) is getting close to the \(limit.noun)",
                              body: "This is what a Lanes alert looks like." + alternativeText(best),
@@ -197,12 +199,17 @@ extension ProfileStore {
                              info: info("", limit.tag, reset: nil, best: best))
     }
 
-    // Every profile that should report usage fails in a way that points at
-    // claude.ai having changed its usage endpoint, not at a network blip.
-    var usageLooksBroken: Bool {
-        let us = profiles.compactMap { usage[$0.id] }.filter { !$0.needsSignIn && !$0.hasNoData }
-        return !us.isEmpty && us.allSatisfy { ($0.error != nil || $0.staleError != nil) && $0.formatChanged }
+    // Every profile of one app that should report usage fails in a way that
+    // points at its service (claude.ai, chatgpt.com) having changed its usage
+    // endpoint, not at a network blip. That app, Claude's first.
+    var brokenUsageProvider: (any Provider)? {
+        Providers.all.first { provider in
+            let us = profiles.filter { $0.providerID == provider.id }.compactMap { usage[$0.id] }
+                .filter { !$0.needsSignIn && !$0.hasNoData }
+            return !us.isEmpty && us.allSatisfy { ($0.error != nil || $0.staleError != nil) && $0.formatChanged }
+        }
     }
+    var usageLooksBroken: Bool { brokenUsageProvider != nil }
 
     // Whether a limit gets a notification when it resets: when it's past the
     // first alert level, or someone asked for one ("Notify Me at Reset") for

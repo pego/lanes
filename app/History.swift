@@ -4,14 +4,30 @@ import Foundation
 
 // One usage reading. Short keys: the file holds a week of them per profile.
 // It keeps a profile's first two limits (Usage.primary, .secondary), named
-// after Claude's.
+// after Claude's; hw and ww are their windows in seconds, written only when
+// they aren't Claude's (5 hours, a week), so Claude's readings stay as they
+// were.
 struct UsageSample: Codable, Equatable {
     var t: Date
     var h: Double?   // 5-hour % (the first limit)
     var w: Double?   // weekly % (the second)
+    var hw: Double? = nil
+    var ww: Double? = nil
+
+    init(t: Date, h: Double?, w: Double?, hWindow: TimeInterval? = nil, wWindow: TimeInterval? = nil) {
+        self.t = t
+        self.h = h
+        self.w = w
+        hw = hWindow == ClaudeLimit.fiveHourWindow ? nil : hWindow
+        ww = wWindow == ClaudeLimit.sevenDayWindow ? nil : wWindow
+    }
 
     // The reading of the profile's limit at `index` (in Usage.limits).
     func value(at index: Int) -> Double? { index == 0 ? h : index == 1 ? w : nil }
+    // How long that limit's window ran when this was read.
+    func window(at index: Int) -> TimeInterval? {
+        index == 0 ? hw ?? ClaudeLimit.fiveHourWindow : index == 1 ? ww ?? ClaudeLimit.sevenDayWindow : nil
+    }
 }
 
 // 30 days of readings per profile in usage-history.json, at most one every

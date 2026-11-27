@@ -93,9 +93,20 @@ struct UsageWidgetView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    // "Claude usage" and "5-hour usage" while every profile is Claude's;
+    // just "Usage" once another provider's (and its windows) are in.
+    private func title(_ snap: UsageSnapshot) -> String {
+        let allClaude = snap.profiles.allSatisfy { $0.provider == nil }
+        if family == .systemSmall {
+            let fiveHours = snap.profiles.allSatisfy { ($0.meters.first?.window ?? ClaudeLimit.fiveHourWindow) == ClaudeLimit.fiveHourWindow }
+            return fiveHours ? "5-hour usage" : "Usage"
+        }
+        return allClaude ? "Claude usage" : "Usage"
+    }
+
     private func header(_ snap: UsageSnapshot) -> some View {
         HStack(spacing: 4) {
-            Text(family == .systemSmall ? "5-hour usage" : "Claude usage")
+            Text(title(snap))
                 .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
             Spacer(minLength: 0)
             // Only worth saying when the app stopped refreshing.
@@ -179,8 +190,8 @@ struct LanesWidget: Widget {
         StaticConfiguration(kind: "LanesUsage", provider: UsageProvider()) { entry in
             UsageWidgetView(entry: entry)
         }
-        .configurationDisplayName("Claude Usage")
-        .description("5-hour and weekly usage for each profile.")
+        .configurationDisplayName("Lanes Usage")
+        .description("Usage limits for each profile.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }

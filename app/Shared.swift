@@ -209,14 +209,21 @@ struct UsageSnapshot: Codable {
         var limits: [ModelLimit]? = nil
         // Set when the last check failed and these are the previous numbers.
         var staleSince: Date? = nil
+        // Only for a provider other than Claude (absent means Claude, whose
+        // windows are 5 hours and a week): its id, and how long the window
+        // of each column pair runs, in seconds (absent: no such limit).
+        var provider: String? = nil
+        var fiveHourWindow: Double? = nil
+        var sevenDayWindow: Double? = nil
         var id: String { name }
     }
     var updated: Date
     var profiles: [Entry]
 
     // The file has a column pair for two limits: a profile's first (shortest
-    // window) in fiveHour…, its second in sevenDay…. Named after Claude's,
-    // whose windows they are: the file doesn't record windows.
+    // window) in fiveHour…, its second in sevenDay…. Named after Claude's;
+    // another provider's entry says how long its windows run
+    // (fiveHourWindow, sevenDayWindow), so Claude's entries stay as they were.
 
     // The real home, not the sandbox container NSHomeDirectory() returns in the widget.
     static var directory: String {
@@ -241,8 +248,16 @@ struct UsageSnapshot: Codable {
 }
 
 extension UsageSnapshot.Entry {
-    // The two limits the file has columns for, as limits (see UsageSnapshot).
+    // The limits the file has columns for, as limits (see UsageSnapshot):
+    // Claude's two, or as many as the other provider's entry has windows for.
     var meters: [UsageLimit] {
-        [ClaudeLimit.fiveHour(fiveHour, reset: fiveHourReset), ClaudeLimit.sevenDay(sevenDay, reset: sevenDayReset)]
+        guard provider != nil else {
+            return [ClaudeLimit.fiveHour(fiveHour, reset: fiveHourReset),
+                    ClaudeLimit.sevenDay(sevenDay, reset: sevenDayReset)]
+        }
+        return [("primary", fiveHour, fiveHourReset, fiveHourWindow), ("secondary", sevenDay, sevenDayReset, sevenDayWindow)]
+            .compactMap { key, used, reset, window in
+                window.map { UsageLimit(key: key, label: UsageLimit.label(forWindow: $0), used: used, reset: reset, window: $0) }
+            }
     }
 }

@@ -526,17 +526,91 @@ enum UnitTests {
             // History holds it as the first limit.
             equal(UsageSample(t: t0, h: 40, w: nil).value(at: 0), 40)
 
-            // It ranks and publishes like Claude's first limit; no second column.
+            // It ranks and publishes like Claude's first limit; no second
+            // column, and the file says how long its window runs.
             let s = ProfileStore(live: false)
-            s.profiles = ["Free", "Plus"].map { Profile(name: $0, dataDir: "/tmp/\($0)", colorName: "blue") }
-            s.usage = ["Free": u, "Plus": Usage(fiveHour: 60, sevenDay: 10)]
-            equal(s.bestProfile()?.name, "Free")
+            s.profiles = [Profile(name: "Free", dataDir: "/tmp/Free", colorName: "blue", providerID: "chatgpt"),
+                          Profile(name: "Plus", dataDir: "/tmp/Plus", colorName: "blue", providerID: "chatgpt"),
+                          Profile(name: "Claude", dataDir: "/tmp/Claude", colorName: "orange")]
+            s.usage = ["Free": u, "Plus": Usage(limits: [ClaudeLimit.fiveHour(60, reset: nil)]),
+                       "Claude": Usage(fiveHour: 1, sevenDay: 1)]
+            equal(s.bestProfile(provider: "chatgpt")?.name, "Free")
             let e = s.snapshotEntries()[0]
             equal(e.fiveHour, 40)
             equal(e.sevenDay, nil)
             equal(e.fiveHourReset, l.reset)
+            equal(e.provider, "chatgpt")
+            equal(e.fiveHourWindow, month)
+            equal(e.sevenDayWindow, nil)
+            equal(e.meters.map(\.label), ["30 days"])
             equal(ProfileStore.usageTSV([e], updated: t0),
-                  "# updated 1790000000\nFree\tblue\t0\t40\t1790864000\t\t\t\t\t\t\t\n")
+                  "# updated 1790000000\nFree\tblue\t0\t40\t1790864000\t\t\t\t\t\t\t\tchatgpt\t2592000\t\n")
+            let json = String(decoding: try UsageSnapshot.encoder.encode(e), as: UTF8.self)
+            expect(json.contains("\"provider\" : \"chatgpt\"") && json.contains("\"fiveHourWindow\" : 2592000"), json)
+            expect(!json.contains("sevenDayWindow"), json)
+        }
+
+        test("usage.json: a Claude entry has no provider or window fields; usage.tsv adds them at the end") {
+            let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+            let s = ProfileStore(live: false)
+            s.profiles = [Profile(name: "Work", dataDir: "/tmp/Work", colorName: "blue")]
+            s.usage = ["Work": Usage(fiveHour: 20, sevenDay: 30)]
+            let e = s.snapshotEntries()[0]
+            equal(e.provider, nil)
+            equal(e.fiveHourWindow, nil)
+            let json = String(decoding: try UsageSnapshot.encoder.encode(e), as: UTF8.self)
+            expect(!json.contains("provider") && !json.contains("Window"), json)
+            equal(e.meters.map(\.label), ["5 hours", "Week"])
+            equal(ProfileStore.usageTSV([e], updated: t0),
+                  "# updated 1790000000\nWork\tblue\t0\t20\t\t30\t\t\t\t\t\t\tclaude\t18000\t604800\n")
+            // An older app's entry (no provider) reads as Claude's.
+            let old = try JSONDecoder().decode(UsageSnapshot.Entry.self,
+                                                from: Data("{\"name\":\"A\",\"color\":\"red\",\"running\":false,\"fiveHour\":5}".utf8))
+            equal(old.meters.map(\.window), [ClaudeLimit.fiveHourWindow, ClaudeLimit.sevenDayWindow])
+        }
+
+        test("History: windows only when not Claude's; forecasts skip another window's readings") {
+            let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+            let claude = UsageSample(t: t0, h: 1, w: 2, hWindow: 18000, wWindow: 604800)
+            equal(claude.hw, nil)
+            equal(claude.ww, nil)
+            let e = JSONEncoder()
+            e.dateEncodingStrategy = .secondsSince1970
+            equal(try e.encode(claude), try e.encode(UsageSample(t: t0, h: 1, w: 2)))
+            expect(!String(decoding: try e.encode(claude), as: UTF8.self).contains("hw"))
+            let free = UsageSample(t: t0, h: 40, w: nil, hWindow: 30 * 86400, wWindow: nil)
+            equal(free.window(at: 0), 30 * 86400)
+            equal(free.window(at: 1), ClaudeLimit.sevenDayWindow)
+            expect(String(decoding: try e.encode(free), as: UTF8.self).contains("\"hw\":2592000"))
+
+            // A profile that went from Free (30 days) to Plus (5 hours): the
+            // 30-day readings don't feed the 5-hour forecast.
+            let now = Date()
+            var plus = Usage(limits: [ClaudeLimit.fiveHour(50, reset: now + 3600)])
+            ProfileStore.forecast(&plus, history: [UsageSample(t: now - 1800, h: 0, w: nil, hWindow: 30 * 86400, wWindow: nil)], now: now)
+            equal(plus.primary?.pace, nil)
+            ProfileStore.forecast(&plus, history: [UsageSample(t: now - 1800, h: 0, w: nil)], now: now)
+            expect(plus.primary?.pace != nil)
+        }
+
+        test("Most room: within one provider; Claude's first when none is given") {
+            let s = ProfileStore(live: false)
+            s.profiles = [Profile(name: "C1", dataDir: "/tmp/C1", colorName: "blue"),
+                          Profile(name: "C2", dataDir: "/tmp/C2", colorName: "blue"),
+                          Profile(name: "G1", dataDir: "/tmp/G1", colorName: "blue", providerID: "chatgpt"),
+                          Profile(name: "G2", dataDir: "/tmp/G2", colorName: "blue", providerID: "chatgpt")]
+            s.usage = ["C1": Usage(fiveHour: 90, sevenDay: 10), "C2": Usage(fiveHour: 70, sevenDay: 10),
+                       "G1": Usage(fiveHour: 5, sevenDay: 10), "G2": Usage(fiveHour: 30, sevenDay: 10)]
+            equal(s.bestProfile()?.name, "C2")
+            equal(s.bestProfile(provider: "chatgpt")?.name, "G1")
+            equal(s.roomiestProfile(provider: "chatgpt")?.name, "G1")
+            // A Claude lane near its limit is pointed at another Claude lane,
+            // never at a roomier ChatGPT one.
+            equal(s.alternative(to: "G2")?.name, "G1")
+            equal(s.alternative(to: "C1"), nil)
+            // Only ChatGPT lanes with numbers: that's the best there is.
+            s.usage = ["G1": Usage(fiveHour: 5, sevenDay: 10)]
+            equal(s.bestProfile()?.name, "G1")
         }
 
         test("Window timings come out exactly as Claude's old constants") {

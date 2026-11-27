@@ -867,10 +867,14 @@ cmd_launch() {
   # The single launch path used by the Spotlight launchers, the GUI, and the
   # chooser. Re-homes any stray clone first so a post-update relaunch can't
   # keep serving the default account under a profile's name.
-  local raw="${1:-}"
-  [[ -n "$raw" ]] || err "Usage: lanes launch <name> | lanes launch --best"
+  local raw="${1:-}" provider=claude
+  [[ -n "$raw" ]] || err "Usage: lanes launch <name> | lanes launch --best [--provider <provider>]"
   if [[ "$raw" == "--best" ]]; then
-    raw=$(best_profile) ||
+    if [[ "${2:-}" == "--provider" ]]; then
+      provider="${3:-}"
+      provider_known "$provider" || err "Unknown provider '$provider'. Available: ${PROVIDERS}"
+    fi
+    raw=$(best_profile "$provider") ||
       err "No usage data to choose from. Open the Lanes app (menu bar) so it can load usage."
     info "Most free: $raw"
     if [[ "$raw" == "Default" ]]; then
@@ -1131,8 +1135,11 @@ USAGE_JSON="$DATA_DIR/usage.json"
 
 # Prints each profile as one tab-joined record without its header line; fields:
 # name color running 5h% 5h-reset 7d% 7d-reset error 5h-runs-out 7d-runs-out
-# models stale-since (empty = unknown; times are epoch; models is
-# "Opus=12@<reset>,Sonnet=3@<reset>"). Older app versions write only the first 8.
+# models stale-since provider window1 window2 (empty = unknown; times are
+# epoch; models is "Opus=12@<reset>,Sonnet=3@<reset>"). The "5h" and "7d"
+# fields are the profile's first and second limit, whose windows in seconds
+# are window1 and window2 (Claude's: 18000, 604800). Older app versions write
+# only the first 8, or 12: those rows are Claude's.
 usage_records() {
   [[ -f "$USAGE_TSV" ]] || return 1
   local line
@@ -1149,15 +1156,54 @@ usage_age() {
   print -- $(( EPOCHSECONDS - ${updated:-0} ))
 }
 
+# The window of a record's first (1) or second (2) limit, in seconds.
+record_window() {
+  local -a f=("${(@ps:\t:)1}")
+  local w="${f[$(( 13 + $2 ))]:-}"
+  [[ -n "${f[13]:-}" ]] || w=$(( $2 == 1 ? 18000 : 604800 ))
+  print -- "$w"
+}
+
+# "5h", "7d", "30d": a window's tag, as the app names it.
+window_tag() {
+  local s="$1"
+  if (( s >= 86400 && s % 86400 == 0 )); then print -- "$(( s / 86400 ))d"
+  elif (( s >= 3600 && s % 3600 == 0 )); then print -- "$(( s / 3600 ))h"
+  else print -- "$(( s / 60 > 0 ? s / 60 : 1 ))m"
+  fi
+}
+
+# When a limit of this window runs out: a time for one shorter than a day,
+# else a day and time.
+runs_out_format() {
+  (( $1 < 86400 )) && print -- "%H:%M" || print -- "%a %H:%M"
+}
+
+# "5-hour limit", "weekly limit", "30-day limit".
+window_noun() {
+  local t
+  (( $1 == 604800 )) && { print -- "weekly limit"; return }
+  t=$(window_tag "$1")
+  case "$t" in
+    *d) print -- "${t%d}-day limit" ;;
+    *h) print -- "${t%h}-hour limit" ;;
+    *)  print -- "${t%m}-minute limit" ;;
+  esac
+}
+
 # The profile with the most 5-hour headroom (weekly as tie-breaker); one whose
 # weekly limit is used up only wins if every one is. Same rule as the app.
+# Among one provider's profiles (default: claude): another app's room says
+# nothing about this one's.
 best_profile() {
+  local want="${1:-claude}"
   local rec best="" fallback="" bh=1000 bw=1000 fh=1000 fw=1000 h w
   local -a f
   for rec in "${(@f)$(usage_records)}"; do
     [[ -n "$rec" ]] || continue
     f=("${(@ps:\t:)rec}")
     [[ -n "${f[4]:-}" && -z "${f[8]:-}" ]] || continue
+    [[ "${f[13]:-claude}" == "$want" ]] || continue
     h=${f[4]} w=${f[6]:-0}
     if (( w < 100 )); then
       if (( h < bh || (h == bh && w < bw) )); then best=${f[1]} bh=$h bw=$w; fi
@@ -1171,7 +1217,8 @@ best_profile() {
   print -- "$best"
 }
 
-# "in 2h 10m" within a day, "Mon 09:30" beyond that, "" if unknown or past.
+# "in 2h 10m" within a day, "Mon 09:30" beyond that, "Dec 07 09:30" more
+# than a week away, "" if unknown or past.
 fmt_reset() {
   zmodload -F zsh/datetime p:EPOCHSECONDS b:strftime
   local t="${1:-}" secs
@@ -1182,6 +1229,8 @@ fmt_reset() {
     local h=$(( secs / 3600 )) m=$(( (secs % 3600 + 59) / 60 ))
     (( m == 60 )) && { h=$(( h + 1 )); m=0; }
     if (( h == 0 )); then print -- "in ${m}m"; else print -- "in ${h}h ${m}m"; fi
+  elif (( secs > 604800 )); then
+    strftime "%b %d %H:%M" "$t"
   else
     strftime "%a %H:%M" "$t"
   fi
@@ -1247,9 +1296,19 @@ cmd_usage() {
     return 0
   fi
   zmodload -F zsh/datetime b:strftime
-  local rec mark five week m label rest
+  local rec mark five week m label rest w1 w2 mixed=0
   local -a f notes
-  printf "  %-14s %5s  %-12s %5s  %-12s\n" PROFILE 5H RESETS WEEK RESETS
+  # Every profile on Claude's two windows: the 5H and WEEK columns. Any
+  # other window: each value carries its own window's tag ("30d 40%").
+  for rec in "${(@f)$(usage_records)}"; do
+    [[ -n "$rec" ]] || continue
+    [[ "$(record_window "$rec" 1)" == (18000|) && "$(record_window "$rec" 2)" == (604800|) ]] || mixed=1
+  done
+  if (( mixed )); then
+    printf "  %-14s %9s  %-12s %9s  %-12s\n" PROFILE LIMIT RESETS LIMIT RESETS
+  else
+    printf "  %-14s %5s  %-12s %5s  %-12s\n" PROFILE 5H RESETS WEEK RESETS
+  fi
   for rec in "${(@f)$(usage_records)}"; do
     [[ -n "$rec" ]] || continue
     f=("${(@ps:\t:)rec}")
@@ -1258,19 +1317,30 @@ cmd_usage() {
       printf "%s %-14s %s\n" "$mark" "${f[1]}" "${f[8]}"
       continue
     fi
+    w1=$(record_window "$rec" 1) w2=$(record_window "$rec" 2)
     five=${f[4]:+${f[4]}%} week=${f[6]:+${f[6]}%}
-    printf "%s %-14s %5s  %-12s %5s  %-12s\n" "$mark" "${f[1]}" "${five:-—}" "$(fmt_reset "${f[5]:-}")" \
-      "${week:-—}" "$(fmt_reset "${f[7]:-}")"
+    if (( mixed )); then
+      five=${w1:+$(window_tag "$w1") ${five:-—}} week=${w2:+$(window_tag "$w2") ${week:-—}}
+      printf "%s %-14s %9s  %-12s %9s  %-12s\n" "$mark" "${f[1]}" "${five:-—}" "$(fmt_reset "${f[5]:-}")" \
+        "${week:-}" "$(fmt_reset "${f[7]:-}")"
+    else
+      printf "%s %-14s %5s  %-12s %5s  %-12s\n" "$mark" "${f[1]}" "${five:-—}" "$(fmt_reset "${f[5]:-}")" \
+        "${week:-—}" "$(fmt_reset "${f[7]:-}")"
+    fi
     # Weekly limits for single models, under the WEEK column.
     for m in "${(@s:,:)${f[11]:-}}"; do
       [[ -n "$m" ]] || continue
       label=${m%%=*} rest=${m#*=}
-      printf "  %-14s %5s  %-12s %5s  %-12s\n" "  $label" "" "" "${rest%%@*}%" "$(fmt_reset "${rest#*@}")"
+      if (( mixed )); then
+        printf "  %-14s %9s  %-12s %9s  %-12s\n" "  $label" "" "" "7d ${rest%%@*}%" "$(fmt_reset "${rest#*@}")"
+      else
+        printf "  %-14s %5s  %-12s %5s  %-12s\n" "  $label" "" "" "${rest%%@*}%" "$(fmt_reset "${rest#*@}")"
+      fi
     done
     [[ -n "${f[9]:-}" ]] &&
-      notes+=("${f[1]}: at this pace, the 5-hour limit is used up around $(strftime "%H:%M" "${f[9]}")")
+      notes+=("${f[1]}: at this pace, the $(window_noun "${w1:-18000}") is used up around $(strftime "$(runs_out_format "${w1:-18000}")" "${f[9]}")")
     [[ -n "${f[10]:-}" ]] &&
-      notes+=("${f[1]}: at this pace, the weekly limit is used up around $(strftime "%a %H:%M" "${f[10]}")")
+      notes+=("${f[1]}: at this pace, the $(window_noun "${w2:-604800}") is used up around $(strftime "%a %H:%M" "${f[10]}")")
     [[ -n "${f[12]:-}" ]] &&
       notes+=("${f[1]}: the last check failed; these numbers are from $(strftime "%H:%M" "${f[12]}")")
   done

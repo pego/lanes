@@ -49,19 +49,24 @@ extension ProfileStore {
         }
     }
 
+    // Each limit's pace from the profile's history. History keeps the first
+    // two limits; the rest have no forecast. Readings from another window
+    // (a plan change) don't count.
+    static func forecast(_ u: inout Usage, history samples: [UsageSample], now: Date = Date()) {
+        for i in u.limits.indices {
+            let series = samples.compactMap { s in
+                s.window(at: i) == u.limits[i].window ? s.value(at: i).map { (s.t, $0) } : nil
+            }
+            u.limits[i].pace = Forecast.pace(u.limits[i], samples: series, now: now)
+        }
+    }
+
     // How long a failed check may keep showing older numbers.
     static let staleGrace: TimeInterval = 3600
 
     func apply(_ fresh: Usage, for id: String, local: LocalUsage.Reading? = nil) {
         var u = Self.merge(fresh: fresh, previous: usage[id], previousAt: lastUsageUpdate, local: local)
-        if u.error == nil, u.staleSince == nil {
-            let samples = history[id] ?? []
-            // History keeps the first two limits; the rest have no forecast.
-            for i in u.limits.indices {
-                let series = samples.compactMap { s in s.value(at: i).map { (s.t, $0) } }
-                u.limits[i].pace = Forecast.pace(u.limits[i], samples: series)
-            }
-        }
+        if u.error == nil, u.staleSince == nil { Self.forecast(&u, history: history[id] ?? []) }
         if usage[id] != u { usage[id] = u }
         guard u.staleError == nil else { return }
         scheduleResetAlerts(u, for: id)
@@ -117,7 +122,9 @@ extension ProfileStore {
         // Stale numbers are a repeat of an older reading, not a new one.
         var h = history
         for e in entries where e.error == nil && e.staleSince == nil && (e.fiveHour != nil || e.sevenDay != nil) {
-            UsageHistory.append(UsageSample(t: now, h: e.fiveHour, w: e.sevenDay), to: &h[e.name, default: []])
+            UsageHistory.append(UsageSample(t: now, h: e.fiveHour, w: e.sevenDay,
+                                            hWindow: e.fiveHourWindow, wWindow: e.sevenDayWindow),
+                                to: &h[e.name, default: []])
         }
         UsageHistory.prune(&h, profiles: Set(entries.map(\.name)))
         if h != history { history = h; UsageHistory.save(h) }
@@ -131,22 +138,30 @@ extension ProfileStore {
         profiles.map { p -> UsageSnapshot.Entry in
             let u = usage[p.id]
             let first = u?.primary, second = u?.secondary
+            let claude = p.providerID == Providers.claude.id
             return .init(name: p.name, color: p.colorName, running: running.contains(p.id),
                          fiveHour: first?.used, sevenDay: second?.used,
                          fiveHourReset: first?.reset, sevenDayReset: second?.reset, error: u?.error,
                          fiveHourRunsOut: first?.pace?.runsOutAt, sevenDayRunsOut: second?.pace?.runsOutAt,
                          limits: u.flatMap { $0.models.isEmpty ? nil : $0.models },
-                         staleSince: u?.staleSince)
+                         staleSince: u?.staleSince,
+                         provider: claude ? nil : p.providerID,
+                         fiveHourWindow: claude ? nil : first?.window,
+                         sevenDayWindow: claude ? nil : second?.window)
         }
     }
 
     // One line per profile, tab-separated, for the shell: name color running
-    // 5h% 5h-reset 7d% 7d-reset error 5h-runs-out 7d-runs-out models stale-since.
-    // Empty field = unknown; times are epoch; models is
-    // "Opus=12@<reset>,Sonnet=3@<reset>". New columns only ever go at the end.
+    // 5h% 5h-reset 7d% 7d-reset error 5h-runs-out 7d-runs-out models stale-since
+    // provider window1 window2. Empty field = unknown; times are epoch;
+    // models is "Opus=12@<reset>,Sonnet=3@<reset>". The "5h" and "7d"
+    // columns are a profile's first and second limit, whose windows (in
+    // seconds) are window1 and window2: Claude's are 18000 and 604800.
+    // New columns only ever go at the end.
     static func usageTSV(_ entries: [UsageSnapshot.Entry], updated now: Date) -> String {
         func n(_ v: Double?) -> String { v.map { String(Int($0.rounded())) } ?? "" }
         func t(_ d: Date?) -> String { d.map { String(Int($0.timeIntervalSince1970)) } ?? "" }
+        func w(_ s: TimeInterval?) -> String { s.map { String(Int($0)) } ?? "" }
         func clean(_ s: String) -> String {
             s.replacingOccurrences(of: "\t", with: " ").replacingOccurrences(of: "\n", with: " ")
         }
@@ -157,7 +172,9 @@ extension ProfileStore {
             }.joined(separator: ",")
             tsv += [e.name, e.color, e.running ? "1" : "0", n(e.fiveHour), t(e.fiveHourReset),
                     n(e.sevenDay), t(e.sevenDayReset), clean(e.error ?? ""),
-                    t(e.fiveHourRunsOut), t(e.sevenDayRunsOut), models, t(e.staleSince)]
+                    t(e.fiveHourRunsOut), t(e.sevenDayRunsOut), models, t(e.staleSince),
+                    e.provider ?? Providers.claude.id, w(e.provider == nil ? ClaudeLimit.fiveHourWindow : e.fiveHourWindow),
+                    w(e.provider == nil ? ClaudeLimit.sevenDayWindow : e.sevenDayWindow)]
                 .joined(separator: "\t") + "\n"
         }
         return tsv
@@ -165,10 +182,16 @@ extension ProfileStore {
 
     // Most headroom in the first limit (Claude's 5-hour one), the second
     // (weekly) as the tie-breaker; a profile whose second limit is used up
-    // only wins if every one is.
-    func bestProfile() -> Profile? {
+    // only wins if every one is. Among one provider's profiles: one app's
+    // room says nothing about another's. Without a provider, Claude's, or
+    // the first provider with any numbers.
+    func bestProfile(provider: String? = nil) -> Profile? {
+        guard let provider else {
+            for p in Providers.all { if let b = bestProfile(provider: p.id) { return b } }
+            return nil
+        }
         let scored = profiles.compactMap { p -> (Profile, Double, Double)? in
-            guard let u = usage[p.id], u.error == nil, let h = u.primary?.used else { return nil }
+            guard p.providerID == provider, let u = usage[p.id], u.error == nil, let h = u.primary?.used else { return nil }
             return (p, h, u.secondary?.used ?? 0)
         }
         let usable = scored.filter { $0.2 < 100 }
@@ -176,10 +199,17 @@ extension ProfileStore {
     }
 
     // The best profile, but only when there's a real choice: two or more
-    // profiles with usage numbers. Drives the "most room" callouts.
-    func roomiestProfile() -> Profile? {
-        let withData = profiles.filter { usage[$0.id]?.primary?.used != nil && usage[$0.id]?.error == nil }
-        return withData.count >= 2 ? bestProfile() : nil
+    // profiles of that provider with usage numbers. Drives the "most room"
+    // callouts.
+    func roomiestProfile(provider: String? = nil) -> Profile? {
+        guard let provider else {
+            for p in Providers.all { if let b = roomiestProfile(provider: p.id) { return b } }
+            return nil
+        }
+        let withData = profiles.filter {
+            $0.providerID == provider && usage[$0.id]?.primary?.used != nil && usage[$0.id]?.error == nil
+        }
+        return withData.count >= 2 ? bestProfile(provider: provider) : nil
     }
 
     // "3 profiles · 1 running · most room in Work (92% left)"

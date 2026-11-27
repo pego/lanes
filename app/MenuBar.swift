@@ -89,8 +89,8 @@ struct MenuPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if store.usageLooksBroken {
-                UsageBrokenBanner(store: store)
+            if let broken = store.brokenUsageProvider {
+                UsageBrokenBanner(store: store, provider: broken)
                     .padding(.horizontal, 10)
                     .padding(.bottom, 6)
             }
