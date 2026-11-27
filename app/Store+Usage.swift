@@ -21,18 +21,18 @@ extension ProfileStore {
     func refreshUsage() {
         guard live, !isRefreshingUsage, !welcomePending else { return }
         isRefreshingUsage = true
-        let targets = profiles.map { ($0.id, dataPath(of: $0)) }
+        let targets = profiles.map { ($0.id, $0.provider, dataPath(of: $0)) }
         Task.detached {
             // All profiles at once, each with its own time limit, so one that
             // hangs (a stuck request, a slow disk) doesn't hold up the rest.
             await withTaskGroup(of: (String, Usage, LocalUsage.Reading?).self) { group in
-                for (id, dir) in targets {
+                for (id, provider, dir) in targets {
                     group.addTask {
-                        do { return (id, try await withTimeout(usageTimeout) { try await fetchUsage(dataDir: dir) }, nil) }
+                        do { return (id, try await withTimeout(usageTimeout) { try await provider.fetchUsage(dataDir: dir) }, nil) }
                         catch {
                             let u = Usage(fiveHour: nil, sevenDay: nil, error: error.localizedDescription,
                                           formatChanged: isFormatError(error))
-                            return (id, u, LocalUsage.latest(dataDir: dir))
+                            return (id, u, provider.localUsage(dataDir: dir))
                         }
                     }
                 }
@@ -71,10 +71,10 @@ extension ProfileStore {
         paceAlerts(u, for: id)
     }
 
-    // What a lane shows after a check. A failed check (network, claude.ai
+    // What a lane shows after a check. A failed check (network, the service
     // having a moment) doesn't blank the lane: for up to staleGrace it keeps
     // the newest older numbers there are, marked as stale. That's Lanes' own
-    // last reading, or Claude Desktop's record when that one is newer (or
+    // last reading, or the app's own record when that one is newer (or
     // Lanes has none yet, as right after launching offline). Signing out
     // still clears the lane at once.
     static func merge(fresh: Usage, previous prev: Usage?, previousAt: Date?, local: LocalUsage.Reading?,
@@ -91,7 +91,7 @@ extension ProfileStore {
             var u = Usage(fiveHour: local.fiveHour, sevenDay: local.sevenDay,
                           fiveHourReset: reset(prev?.fiveHourReset), sevenDayReset: reset(prev?.sevenDayReset),
                           error: nil)
-            u.fromClaudeDesktop = true
+            u.fromLocalRecord = true
             best = (local.t, u)
         }
         guard let best, now.timeIntervalSince(best.at) < staleGrace else { return fresh }

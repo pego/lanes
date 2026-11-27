@@ -252,10 +252,10 @@ struct LaneRow<Detail: View>: View {
                     .font(.system(size: 22, weight: .heavy, design: .rounded).monospacedDigit())
                     .foregroundStyle(tint.opacity(running ? 1 : 0.55))
                     .frame(width: 34, alignment: .leading)
-                TintedClaudeIcon(color: profile.color, size: 42)
+                TintedClaudeIcon(color: profile.color, size: 42, provider: profile.provider)
                 identity
                     .frame(width: 168, alignment: .leading)
-                UsagePair(usage: usage, tint: tint, signIn: launch, retry: retry)
+                UsagePair(usage: usage, tint: tint, provider: profile.provider, signIn: launch, retry: retry)
                     .frame(maxWidth: 340)
                 Spacer(minLength: 12)
                 actions

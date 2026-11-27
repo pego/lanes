@@ -95,20 +95,21 @@ extension ProfileStore {
                 out.append(HealthCheck(id: "notifications", status: .ok, title: "Notifications are allowed"))
             }
         }
+        let claude = Providers.claude
         switch ChromiumKey.state {
         case .denied(let why):
-            out.append(HealthCheck(id: "keychain-access", status: .fail, title: "Lanes can't read Claude's Keychain key",
-                                   detail: "\(why). Without it Lanes can't see usage. Try again and choose Always Allow when macOS asks about “Claude Safe Storage”.",
+            out.append(HealthCheck(id: "keychain-access", status: .fail, title: "Lanes can't read \(claude.name)'s Keychain key",
+                                   detail: "\(why). Without it Lanes can't see usage. Try again and choose Always Allow when macOS asks about “\(claude.keychainItem ?? "")”.",
                                    fix: "retry-keychain"))
         case .ok:
-            out.append(HealthCheck(id: "keychain-access", status: .ok, title: "Lanes can read Claude's Keychain key"))
+            out.append(HealthCheck(id: "keychain-access", status: .ok, title: "Lanes can read \(claude.name)'s Keychain key"))
         case .unknown:
             break
         }
-        if routeLinks {
+        if routeLinks, let scheme = claude.linkScheme {
             out.append(handlesLinks
-                       ? HealthCheck(id: "links", status: .ok, title: "claude:// links go through Lanes")
-                       : HealthCheck(id: "links", status: .warn, title: "claude:// links bypass Lanes",
+                       ? HealthCheck(id: "links", status: .ok, title: "\(scheme):// links go through Lanes")
+                       : HealthCheck(id: "links", status: .warn, title: "\(scheme):// links bypass Lanes",
                                      detail: "Another app took them over; sign-in links may open in the wrong profile.",
                                      fix: "claim-links"))
         }
@@ -121,7 +122,8 @@ extension ProfileStore {
 
     // Whether macOS hands claude:// links to this app.
     var handlesLinks: Bool {
-        guard let cur = NSWorkspace.shared.urlForApplication(toOpen: URL(string: "claude://")!) else { return false }
+        guard let probe = Providers.claude.probeURL,
+              let cur = NSWorkspace.shared.urlForApplication(toOpen: probe) else { return false }
         return Bundle(url: cur)?.bundleIdentifier == Bundle.main.bundleIdentifier
     }
 
@@ -130,7 +132,7 @@ extension ProfileStore {
         switch action {
         case "setup": runLanes(["setup"])
         case "watchdog": runLanes(["watchdog", "install"])
-        case "download-claude": NSWorkspace.shared.open(URL(string: "https://claude.ai/download")!)
+        case "download-claude": NSWorkspace.shared.open(Providers.claude.downloadURL)
         case "notifications-ask": Notifier.shared.setUp()
         case "notifications-settings":
             let id = Bundle.main.bundleIdentifier ?? ""

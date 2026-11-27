@@ -6,43 +6,45 @@ import SwiftUI
 import AppKit
 import CoreImage
 
-// Claude's own icon, hue-shifted to the profile's color with the same
+// The app's own icon, hue-shifted to the profile's color with the same
 // CIHueAdjust the helper uses for the Dock tiles and launchers, so the
-// window shows exactly the icon you'll find in the Dock.
+// window shows exactly the icon you'll find in the Dock. Only the hueShift
+// icon style exists so far (see IconStyle).
 struct TintedClaudeIcon: View {
     let color: ProfileColor
     var size: CGFloat = 40
+    var provider: any Provider = Providers.claude
 
     var body: some View {
-        Image(nsImage: tintedClaudeIcon(hue: color.hue))
+        Image(nsImage: tintedIcon(provider.icon, hue: color.hue))
             .resizable()
             .interpolation(.high)
             .frame(width: size, height: size)
     }
 }
 
-private var tintCache: [Double: NSImage] = [:]
+private var tintCache: [ObjectIdentifier: [Double: NSImage]] = [:]
 
-func tintedClaudeIcon(hue: Double) -> NSImage {
-    if let hit = tintCache[hue] { return hit }
+func tintedIcon(_ icon: NSImage, hue: Double) -> NSImage {
+    if let hit = tintCache[ObjectIdentifier(icon)]?[hue] { return hit }
     let px = 256
     guard hue != 0,
           let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: px, pixelsHigh: px,
                                      bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                      colorSpaceName: .calibratedRGB, bytesPerRow: 0, bitsPerPixel: 0)
-    else { return claudeIcon }
+    else { return icon }
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-    claudeIcon.draw(in: CGRect(x: 0, y: 0, width: px, height: px))
+    icon.draw(in: CGRect(x: 0, y: 0, width: px, height: px))
     NSGraphicsContext.restoreGraphicsState()
-    guard let ci = CIImage(bitmapImageRep: rep), let f = CIFilter(name: "CIHueAdjust") else { return claudeIcon }
+    guard let ci = CIImage(bitmapImageRep: rep), let f = CIFilter(name: "CIHueAdjust") else { return icon }
     f.setValue(ci, forKey: kCIInputImageKey)
     f.setValue(hue * .pi / 180, forKey: kCIInputAngleKey)
     guard let out = f.outputImage,
           let cg = CIContext().createCGImage(out, from: CGRect(x: 0, y: 0, width: px, height: px))
-    else { return claudeIcon }
+    else { return icon }
     let img = NSImage(cgImage: cg, size: NSSize(width: px, height: px))
-    tintCache[hue] = img
+    tintCache[ObjectIdentifier(icon), default: [:]][hue] = img
     return img
 }
 
@@ -177,6 +179,7 @@ struct MeterCell: View {
 // Why a lane has no meters: not signed in, an error, or nothing loaded yet.
 struct LaneNote: View {
     let usage: Usage?
+    var provider: any Provider = Providers.claude
     var signIn: (() -> Void)? = nil
     var retry: (() -> Void)? = nil
 
@@ -224,19 +227,20 @@ struct LaneNote: View {
     // The tooltip: what happened, in plain words, and what helps.
     private func why(_ u: Usage) -> String {
         guard let e = u.error else { return "" }
+        let service = provider.usageService, app = provider.name
         if u.needsSignIn {
             return e == "session expired"
-                ? "claude.ai signed this profile out. Open it and sign in again to see its usage."
-                : "This profile isn't signed in to Claude yet. Open it and sign in to see its usage."
+                ? "\(service) signed this profile out. Open it and sign in again to see its usage."
+                : "This profile isn't signed in to \(app) yet. Open it and sign in to see its usage."
         }
         if e == "no Keychain access" {
-            return "Lanes needs the key in “Claude Safe Storage” to read usage, and macOS said no. Try again and choose Always Allow; Settings → Status has more."
+            return "Lanes needs the key in “\(provider.keychainItem ?? "")” to read usage, and macOS said no. Try again and choose Always Allow; Settings → Status has more."
         }
-        if e == "Claude's Keychain item is missing" {
-            return "Claude Desktop creates this item the first time it runs. Open Claude once, then try again."
+        if e == "\(app)'s Keychain item is missing" {
+            return "\(provider.desktopName) creates this item the first time it runs. Open \(app) once, then try again."
         }
-        if e == "timed out" { return "claude.ai took too long to answer. Lanes tries again on its own every few minutes." }
-        if u.formatChanged { return "claude.ai answered in a way Lanes doesn't understand; a Lanes update usually fixes it." }
+        if e == "timed out" { return "\(service) took too long to answer. Lanes tries again on its own every few minutes." }
+        if u.formatChanged { return "\(service) answered in a way Lanes doesn't understand; a Lanes update usually fixes it." }
         return "The usage check failed (\(e)). Lanes tries again on its own every few minutes."
     }
 
@@ -251,6 +255,7 @@ struct LaneNote: View {
 struct UsagePair: View {
     let usage: Usage?
     let tint: Color
+    var provider: any Provider = Providers.claude
     var compact = false
     var spacing: CGFloat = 16
     // What the lane's note offers when there are no numbers.
@@ -267,11 +272,11 @@ struct UsagePair: View {
                               window: LimitWindow.week, tint: tint, forecast: u.sevenDayPace, compact: compact)
                 }
                 if let since = u.staleSince {
-                    StaleNote(since: since, error: u.staleError, fromClaudeDesktop: u.fromClaudeDesktop)
+                    StaleNote(since: since, error: u.staleError, fromLocalRecord: u.fromLocalRecord, provider: provider)
                 }
             }
         } else {
-            LaneNote(usage: usage, signIn: signIn, retry: retry)
+            LaneNote(usage: usage, provider: provider, signIn: signIn, retry: retry)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -281,7 +286,8 @@ struct UsagePair: View {
 struct StaleNote: View {
     let since: Date
     let error: String?
-    var fromClaudeDesktop = false
+    var fromLocalRecord = false
+    var provider: any Provider = Providers.claude
 
     var body: some View {
         Label("As of \(clockText(since)): couldn't refresh", systemImage: "exclamationmark.arrow.circlepath")
@@ -290,8 +296,8 @@ struct StaleNote: View {
             .lineLimit(1)
             .help(error.map {
                 "The last usage check failed (\($0)). "
-                    + (fromClaudeDesktop
-                       ? "These numbers are the last ones Claude Desktop recorded itself, shown for up to an hour."
+                    + (fromLocalRecord
+                       ? "These numbers are the last ones \(provider.desktopName) recorded itself, shown for up to an hour."
                        : "Lanes keeps showing the previous numbers for up to an hour.")
             } ?? "")
     }
@@ -301,14 +307,16 @@ struct StaleNote: View {
 // claude.ai changed its usage endpoint, which only a Lanes update can fix.
 struct UsageBrokenBanner: View {
     @ObservedObject var store: ProfileStore
+    var provider: any Provider = Providers.claude
 
     var body: some View {
+        let service = provider.usageService
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Lanes can't read usage from claude.ai")
+                Text("Lanes can't read usage from \(service)")
                     .font(.callout.weight(.semibold))
-                Text("claude.ai may have changed how it reports usage. Launching profiles still works; a Lanes update usually brings the numbers back.")
+                Text("\(service) may have changed how it reports usage. Launching profiles still works; a Lanes update usually brings the numbers back.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

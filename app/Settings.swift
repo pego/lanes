@@ -104,7 +104,7 @@ struct SettingsView: View {
             }
         } footer: {
             HStack(alignment: .top) {
-                note("No telemetry. Usage is read from claude.ai with each profile's own session, and stays on this Mac.")
+                note("No telemetry. Usage is read from \(Providers.claude.usageService) with each profile's own session, and stays on this Mac.")
                 Button("Show Welcome") {
                     store.showWelcome = true
                     openWindow(id: "main")

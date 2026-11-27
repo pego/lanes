@@ -7,12 +7,15 @@
 // with that profile's clone delivers it to the running instance of exactly
 // that bundle. Claude re-registers itself as the handler on every launch,
 // so the 2 s poller claims it back.
+//
+// Only Claude's links are routed: claude:// is the one scheme Lanes claims
+// (Info.plist), and the Default profile is Claude's own install.
 
 import AppKit
 
 extension ProfileStore {
     func bundlePath(for p: Profile) -> String {
-        p.isDefault ? claudeAppPath : clonesDir + "/Claude \(p.name).app"
+        p.isDefault ? p.provider.appPath : p.provider.clonePath(in: clonesDir, profile: p.name)
     }
 
     private func profileID(forBundle url: URL?) -> String? {
@@ -23,7 +26,7 @@ extension ProfileStore {
     private func runningApp(for p: Profile) -> NSRunningApplication? {
         let want = URL(fileURLWithPath: bundlePath(for: p)).standardizedFileURL.path
         return NSWorkspace.shared.runningApplications.first {
-            $0.bundleIdentifier == Self.claudeBundleID && $0.bundleURL?.standardizedFileURL.path == want
+            $0.bundleIdentifier == p.provider.bundleID && $0.bundleURL?.standardizedFileURL.path == want
         }
     }
 
@@ -33,7 +36,7 @@ extension ProfileStore {
         ) { [weak self] note in
             guard let self,
                   let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                  app.bundleIdentifier == Self.claudeBundleID,
+                  app.bundleIdentifier == Providers.claude.bundleID,
                   let id = self.profileID(forBundle: app.bundleURL) else { return }
             self.lastActive = id
         }
@@ -43,20 +46,24 @@ extension ProfileStore {
     // Cheap enough for the 2 s poller: one LaunchServices lookup, and a write
     // only when Claude took the scheme back (throttled in case it fails).
     func claimLinksIfNeeded() {
-        guard routeLinks, !Bundle.main.bundlePath.contains("/AppTranslocation/") else { return }
+        let claude = Providers.claude
+        guard routeLinks, !Bundle.main.bundlePath.contains("/AppTranslocation/"),
+              let scheme = claude.linkScheme, let probe = claude.probeURL else { return }
         // Compared by bundle id, the key LaunchServices stores the default
         // under: with a second copy installed it may resolve to that path.
         let me = Bundle.main.bundleURL.standardizedFileURL
-        if let cur = NSWorkspace.shared.urlForApplication(toOpen: Self.probeURL),
+        if let cur = NSWorkspace.shared.urlForApplication(toOpen: probe),
            Bundle(url: cur)?.bundleIdentifier == Bundle.main.bundleIdentifier { return }
         if let t = lastClaim, Date().timeIntervalSince(t) < 10 { return }
         lastClaim = Date()
-        NSWorkspace.shared.setDefaultApplication(at: me, toOpenURLsWithScheme: "claude") { _ in }
+        NSWorkspace.shared.setDefaultApplication(at: me, toOpenURLsWithScheme: scheme) { _ in }
     }
 
     func releaseLinks() {
-        NSWorkspace.shared.setDefaultApplication(at: URL(fileURLWithPath: claudeAppPath),
-                                                 toOpenURLsWithScheme: "claude") { _ in }
+        let claude = Providers.claude
+        guard let scheme = claude.linkScheme else { return }
+        NSWorkspace.shared.setDefaultApplication(at: URL(fileURLWithPath: claude.appPath),
+                                                 toOpenURLsWithScheme: scheme) { _ in }
     }
 
     func route(_ url: URL) {

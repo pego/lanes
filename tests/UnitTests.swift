@@ -208,7 +208,7 @@ enum UnitTests {
             equal(u.fiveHour, 40)
             equal(u.staleSince, at)
             equal(u.staleError, "HTTP 500")
-            expect(!u.fromClaudeDesktop)
+            expect(!u.fromLocalRecord)
             // Already stale: the clock runs from the first failure.
             equal(merge(failed, prev: u, at: now, local: nil).staleSince, at)
             // Past the hour: blank.
@@ -221,7 +221,7 @@ enum UnitTests {
             equal(u.fiveHour, 55)
             equal(u.sevenDay, 21)
             equal(u.staleSince, local.t)
-            expect(u.fromClaudeDesktop)
+            expect(u.fromLocalRecord)
             // The previous reset times still ahead, and after the reading, are kept.
             equal(u.fiveHourReset, ok.fiveHourReset)
             equal(u.sevenDayReset, ok.sevenDayReset)
@@ -231,7 +231,7 @@ enum UnitTests {
             let local = LocalUsage.Reading(t: now.addingTimeInterval(-1200), fiveHour: 5, sevenDay: 5)
             let u = merge(failed, prev: ok, at: now.addingTimeInterval(-600), local: local)
             equal(u.fiveHour, 40)
-            expect(!u.fromClaudeDesktop)
+            expect(!u.fromLocalRecord)
         }
 
         test("merge: no reading of Lanes' own yet (launched offline)") {
@@ -240,7 +240,7 @@ enum UnitTests {
             equal(u.fiveHour, 12)
             equal(u.sevenDay, nil)
             equal(u.fiveHourReset, nil)
-            expect(u.fromClaudeDesktop)
+            expect(u.fromLocalRecord)
             expect(!u.hasNoData)
             // Too old to show.
             let old = LocalUsage.Reading(t: now.addingTimeInterval(-7200), fiveHour: 12, sevenDay: nil)

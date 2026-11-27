@@ -4,8 +4,10 @@
 // This file holds the profile store's state and profile operations, and the
 // app's scenes. The store's other jobs live in Store+Usage.swift (refreshing
 // and publishing usage), Store+Alerts.swift, Store+Updates.swift and
-// Store+Links.swift (claude:// routing). Usage.swift reads usage from
-// claude.ai, History.swift keeps it and forecasts it, System.swift holds the
+// Store+Links.swift (claude:// routing). Provider.swift describes the apps a
+// profile can run (only Claude, in ClaudeProvider.swift, which also reads
+// usage from claude.ai), Usage.swift holds usage as Lanes keeps it,
+// History.swift keeps it and forecasts it, System.swift holds the
 // system glue. The views live in Window.swift, MenuBar.swift, Settings.swift
 // and Components.swift.
 //
@@ -14,7 +16,7 @@
 // and this app share one implementation. Profiles are discovered from the
 // filesystem (~/Library/Application Support/Lanes/profiles/<Name>) on every refresh;
 // there is no registry to sync. Running instances are detected by reading
-// each Claude process's --user-data-dir argument out of `ps`, because all
+// each app process's --user-data-dir argument out of `ps`, because all
 // instances share one binary and differ only in that flag.
 
 import SwiftUI
@@ -29,9 +31,11 @@ struct Profile: Identifiable, Hashable {
     let name: String
     let dataDir: String?          // nil = the default Claude install
     let colorName: String
+    var providerID = Providers.defaultID
     var id: String { name }
     var isDefault: Bool { dataDir == nil }
     var color: ProfileColor { ProfileColor.named(colorName) }
+    var provider: any Provider { Providers.named(providerID) }
 }
 
 final class ProfileStore: ObservableObject {
@@ -208,7 +212,7 @@ final class ProfileStore: ObservableObject {
         bundleVersion(bundlePath(for: p))
     }
 
-    func dataPath(of p: Profile) -> String { p.dataDir ?? appSupport + "/Claude" }
+    func dataPath(of p: Profile) -> String { p.dataDir ?? p.provider.defaultDataDir }
 
     func launchBest() {
         if let p = bestProfile() {
@@ -253,20 +257,18 @@ final class ProfileStore: ObservableObject {
         var found = Set<String>()
         for lineSub in out.split(separator: "\n") {
             let line = String(lineSub)
-            // Match the main binary of the original bundle OR a profile clone
-            // ("Claude Work.app/Contents/MacOS/Claude"). Helper (Renderer/
-            // GPU/…) processes inherit the flag; skip them so one instance
-            // doesn't show up five times.
-            guard line.contains("/Contents/MacOS/Claude"),
-                  !line.contains("Helper") else { continue }
+            // The main binary of the original bundle OR a profile clone
+            // ("Claude Work.app/Contents/MacOS/Claude"), of the provider the
+            // profile runs; never a helper process (see isMainProcess).
             if let r = line.range(of: "--user-data-dir=") {
                 let rest = String(line[r.upperBound...])
                 // The whole path, not a prefix: "Work" must not match "Workshop".
-                for p in profiles {
+                for p in profiles where p.provider.isMainProcess(line) {
                     if let d = p.dataDir, rest == d || rest.hasPrefix(d + " ") { found.insert(p.id) }
                 }
-            } else if line.contains("Claude.app/Contents/MacOS/Claude") {
-                found.insert("Default")
+            } else if let p = profiles.first(where: \.isDefault),
+                      p.provider.isMainProcess(line), p.provider.isInstalledApp(line) {
+                found.insert(p.id)
             }
         }
         // Same deal as refresh(): the 2s poller must not republish an
@@ -278,12 +280,13 @@ final class ProfileStore: ObservableObject {
         // default will also catch up (re-clone forward) on its next launch.
         // We surface just those — never a clone that self-updated AHEAD of
         // the default, which is fine and must not read as "behind".
-        let installed = bundleVersion(claudeAppPath) ?? ""
+        let claude = Providers.claude
+        let installed = bundleVersion(claude.appPath) ?? ""
         if installed != installedVersion { installedVersion = installed }
         var behind: [String] = []
         if !installed.isEmpty {
-            for p in profiles where !p.isDefault {
-                if let v = bundleVersion(clonesDir + "/Claude \(p.name).app"),
+            for p in profiles where !p.isDefault && p.providerID == claude.id {
+                if let v = bundleVersion(claude.clonePath(in: clonesDir, profile: p.name)),
                    versionLessThan(v, installed) {
                     behind.append(p.name)
                 }
@@ -294,7 +297,7 @@ final class ProfileStore: ObservableObject {
 
     func launch(_ p: Profile) {
         if p.isDefault {
-            do { try runTool("/usr/bin/open", ["-a", claudeAppPath]) }
+            do { try runTool("/usr/bin/open", ["-a", p.provider.appPath]) }
             catch { errorMessage = error.localizedDescription }
         } else {
             // lanes launch runs the profile from its own Claude.app clone (the
@@ -377,8 +380,6 @@ final class ProfileStore: ObservableObject {
     var lastActive: String?
     var lastClaim: Date?
     var activationObserver: NSObjectProtocol?
-    static let claudeBundleID = "com.anthropic.claudefordesktop"
-    static let probeURL = URL(string: "claude://")!
 }
 
 // MARK: - App

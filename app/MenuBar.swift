@@ -257,7 +257,7 @@ struct RoomiestCard: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            TintedClaudeIcon(color: profile.color, size: 34)
+            TintedClaudeIcon(color: profile.color, size: 34, provider: profile.provider)
             VStack(alignment: .leading, spacing: 2) {
                 Text("MOST ROOM")
                     .font(.system(size: 9, weight: .bold))
@@ -323,7 +323,7 @@ struct PanelLane: View {
                             RunState(running: true)
                         }
                     }
-                    UsagePair(usage: usage, tint: tint, compact: true, spacing: 14, signIn: launch)
+                    UsagePair(usage: usage, tint: tint, provider: profile.provider, compact: true, spacing: 14, signIn: launch)
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
