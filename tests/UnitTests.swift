@@ -98,6 +98,15 @@ enum UnitTests {
             expect(u.models.isEmpty)
         }
 
+        await test("An unknown provider's usage isn't read: it needs a newer Lanes") {
+            do { _ = try await Providers.named("future-app").fetchUsage(dataDir: "/x"); expect(false) }
+            catch {
+                let u = Usage(error: error.localizedDescription)
+                equal(u.error, "needs a newer Lanes")
+                expect(!u.needsSignIn)
+            }
+        }
+
         await test("usage() skips organizations without numbers") {
             let orgs = try fixtureJSON("organizations.json")
             var asked: [String] = []
@@ -335,10 +344,17 @@ enum UnitTests {
                 try text.write(toFile: file, atomically: true, encoding: .utf8)
                 equal(Providers.id(ofProfileAt: dir), id)
             }
-            // A provider this Lanes doesn't know is shown as Claude (bin/lanes
-            // refuses to launch it).
+            // A provider this Lanes doesn't know is never taken for Claude
+            // (bin/lanes refuses to launch it): shown as it is, unread.
             equal(Providers.named("chatgpt").id, "chatgpt")
-            equal(Providers.named("future-app").id, "claude")
+            let unknown = Providers.named("future-app")
+            equal(unknown.id, "future-app")
+            expect(!unknown.isKnown && Providers.claude.isKnown && Providers.chatgpt.isKnown)
+            expect(!unknown.isMainProcess("/Applications/Claude.app/Contents/MacOS/Claude --user-data-dir=/x"))
+            expect(!unknown.isMainProcess("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT --user-data-dir=/x"))
+            equal(unknown.linkScheme, nil)
+            equal(unknown.renewsSignIn, false)
+            equal(Profile(name: "Odd", dataDir: dir, colorName: "blue", providerID: "future-app").provider.id, "future-app")
             let p = Profile(name: "Work", dataDir: dir, colorName: "blue")
             equal(p.providerID, "claude")
             equal(p.provider.id, "claude")

@@ -96,9 +96,11 @@ enum Providers {
     static let all: [any Provider] = [claude, chatgpt]
     static let defaultID = "claude"
 
-    // Unknown ids (a profile from a newer Lanes) fall back to Claude.
+    // An id this Lanes doesn't know (a profile a newer Lanes made) is never
+    // treated as Claude: bin/lanes won't launch it, and the app shows the
+    // lane as it is, without reading its usage.
     static func named(_ id: String) -> any Provider {
-        all.first { $0.id == id } ?? claude
+        all.first { $0.id == id } ?? UnknownProvider(id: id)
     }
 
     // A profile folder's `.lanes-provider`: its first line, whitespace
@@ -109,6 +111,41 @@ enum Providers {
         let id = first.filter { !$0.isWhitespace }
         return id.isEmpty ? defaultID : String(id)
     }
+}
+
+// A provider only a newer Lanes knows. Nothing of it can be found or read:
+// no app, no processes (its executable never matches), no usage.
+struct UnknownProvider: Provider {
+    let id: String
+    var name: String { id }
+    var desktopName: String { id }
+    let appCandidates: [String] = []
+    let appPath = "/nonexistent"
+    var icon: NSImage { Self.genericIcon }
+    let executable = "\u{1}lanes-unknown-provider"
+    let bundleID = ""
+    let configEnv = ""
+    let configSubdir = ""
+    let linkScheme: String? = nil
+    let updater = UpdaterKind.sparkle
+    let iconStyle = IconStyle.tintedPlate
+    let defaultDataDir = "/nonexistent"
+    var usageService: String { id }
+    let keychainItem: String? = nil
+    let downloadURL = URL(string: "https://github.com/pego/lanes/releases/latest")!
+    let renewsSignIn = false
+
+    static let error = "needs a newer Lanes"
+    struct Unsupported: LocalizedError { var errorDescription: String? { UnknownProvider.error } }
+
+    func fetchUsage(dataDir: String) async throws -> Usage { throw Unsupported() }
+    func localUsage(dataDir: String) -> LocalReading? { nil }
+
+    private static let genericIcon = NSWorkspace.shared.icon(for: .applicationBundle)
+}
+
+extension Provider {
+    var isKnown: Bool { !(self is UnknownProvider) }
 }
 
 // The first candidate that exists, or the first one.

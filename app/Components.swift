@@ -211,7 +211,7 @@ struct LaneNote: View {
                     .help(why(usage))
                 if usage.needsSignIn, let signIn {
                     noteButton(renews ? "Open" : "Open and sign in", action: signIn)
-                } else if usage.error != nil, let retry {
+                } else if usage.error != nil, provider.isKnown, let retry {
                     noteButton("Try again", action: retry)
                 }
             } else {
@@ -246,6 +246,9 @@ struct LaneNote: View {
     private func why(_ u: Usage) -> String {
         guard let e = u.error else { return "" }
         let service = provider.usageService, app = provider.name
+        if !provider.isKnown {
+            return "This profile runs “\(provider.id)”, an app this version of Lanes doesn't know. Update Lanes to open it and see its usage."
+        }
         if u.needsSignIn {
             return e == "session expired"
                 ? (provider.renewsSignIn
