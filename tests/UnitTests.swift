@@ -650,9 +650,12 @@ enum UnitTests {
             // never at a roomier ChatGPT one.
             equal(s.alternative(to: "G2")?.name, "G1")
             equal(s.alternative(to: "C1"), nil)
+            equal(s.bestToLaunch?.name, "C2")
             // Only ChatGPT lanes with numbers: that's the best there is.
             s.usage = ["G1": Usage(fiveHour: 5, sevenDay: 10)]
             equal(s.bestProfile()?.name, "G1")
+            // ⌥⌘B stays on Claude, like `lanes launch --best`.
+            equal(s.bestToLaunch?.name, nil)
         }
 
         test("Reset alerts: one the usage no longer has is cancelled") {

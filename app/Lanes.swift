@@ -215,8 +215,12 @@ final class ProfileStore: ObservableObject {
 
     func dataPath(of p: Profile) -> String { p.dataDir ?? p.provider.defaultDataDir }
 
+    // What ⌥⌘B opens: the Claude profile with the most room, like
+    // `lanes launch --best` (another app's room says nothing about Claude's).
+    var bestToLaunch: Profile? { bestProfile(provider: Providers.claude.id) }
+
     func launchBest() {
-        if let p = bestProfile() {
+        if let p = bestToLaunch {
             launch(p)
         } else {
             NSSound.beep()
