@@ -29,9 +29,9 @@ protocol Provider {
     var desktopName: String { get }
     // Where the app may be installed, in order of preference.
     var appCandidates: [String] { get }
-    // The installed app, or the first candidate when there is none. Read once.
+    // The installed app, or the first candidate when there is none.
     var appPath: String { get }
-    // Its icon, read once.
+    // Its icon.
     var icon: NSImage { get }
     // Contents/MacOS/<executable>.
     var executable: String { get }
@@ -87,7 +87,8 @@ extension Provider {
 
     var probeURL: URL? { linkScheme.flatMap { URL(string: $0 + "://") } }
 
-    var isInstalled: Bool { FileManager.default.fileExists(atPath: appPath) }
+    // Checked live: an app installed while Lanes runs counts at once.
+    var isInstalled: Bool { installedCandidate(appCandidates) != nil }
 }
 
 enum Providers {
@@ -148,7 +149,29 @@ extension Provider {
     var isKnown: Bool { !(self is UnknownProvider) }
 }
 
+// The first candidate that exists right now, if any.
+func installedCandidate(_ candidates: [String]) -> String? {
+    candidates.first { FileManager.default.fileExists(atPath: $0) }
+}
+
 // The first candidate that exists, or the first one.
 func installedApp(_ candidates: [String]) -> String {
-    candidates.first { FileManager.default.fileExists(atPath: $0) } ?? candidates[0]
+    installedCandidate(candidates) ?? candidates[0]
+}
+
+// An app's icon, kept per path and read again once the app appears there
+// (or goes): before that, macOS hands out a generic icon. Kept alive, so
+// tintedIcon's cache (keyed by the image) never mixes two up.
+enum AppIcons {
+    private static var cache: [String: NSImage] = [:]
+    private static let lock = NSLock()
+
+    static func icon(at path: String) -> NSImage {
+        let key = (FileManager.default.fileExists(atPath: path) ? "+" : "-") + path
+        lock.lock(); defer { lock.unlock() }
+        if let hit = cache[key] { return hit }
+        let icon = NSWorkspace.shared.icon(forFile: path)
+        cache[key] = icon
+        return icon
+    }
 }

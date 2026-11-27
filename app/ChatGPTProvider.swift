@@ -20,8 +20,9 @@ struct ChatGPTProvider: Provider {
     let name = "ChatGPT"
     let desktopName = "ChatGPT"
     var appCandidates: [String] { ["/Applications/ChatGPT.app", NSHomeDirectory() + "/Applications/ChatGPT.app"] }
-    var appPath: String { Self.installed }
-    var icon: NSImage { Self.appIcon }
+    // Looked up each time: ChatGPT may be installed while Lanes runs.
+    var appPath: String { installedApp(appCandidates) }
+    var icon: NSImage { AppIcons.icon(at: appPath) }
     let executable = "ChatGPT"
     let bundleID = "com.openai.codex"
     let configEnv = "CODEX_HOME"
@@ -58,9 +59,6 @@ struct ChatGPTProvider: Provider {
     func localUsage(dataDir: String) -> LocalReading? {
         ChatGPTUsage.latestLocal(codexHome: dataDir + "/" + configSubdir)
     }
-
-    private static let installed = installedApp(Providers.chatgpt.appCandidates)
-    private static let appIcon = NSWorkspace.shared.icon(forFile: installed)
 }
 
 // The sign-in the profile's ChatGPT keeps in <Codex home>/auth.json.

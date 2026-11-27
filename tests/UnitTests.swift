@@ -360,6 +360,22 @@ enum UnitTests {
             equal(p.provider.id, "claude")
         }
 
+        test("An app installed while Lanes runs is seen at once, with its icon") {
+            let dir = NSTemporaryDirectory() + "lanes-install-test-\(UUID().uuidString)"
+            defer { try? FileManager.default.removeItem(atPath: dir) }
+            let app = dir + "/Some.app"
+            equal(installedCandidate([app]), nil)
+            let before = AppIcons.icon(at: app)
+            expect(AppIcons.icon(at: app) === before)
+            try FileManager.default.createDirectory(atPath: app + "/Contents", withIntermediateDirectories: true)
+            equal(installedCandidate(["/nonexistent-lanes-test.app", app]), app)
+            expect(AppIcons.icon(at: app) !== before)
+            // ChatGPT's install is looked up live, not kept from launch.
+            let g = Providers.chatgpt
+            equal(g.isInstalled, g.appCandidates.contains { FileManager.default.fileExists(atPath: $0) })
+            equal(g.appPath, installedApp(g.appCandidates))
+        }
+
         test("ClaudeProvider: the values bin/lanes keeps too") {
             let c = Providers.claude
             equal(c.id, "claude")
