@@ -105,7 +105,9 @@ struct SettingsView: View {
             }
         } footer: {
             HStack(alignment: .top) {
-                note("No telemetry. Usage is read from \(Providers.claude.usageService) with each profile's own session, and stays on this Mac.")
+                note(store.involvesChatGPT
+                     ? "No telemetry. Usage is read from \(Providers.claude.usageService) with each Claude profile's own session and from \(Providers.chatgpt.usageService) with each ChatGPT profile's own sign-in, and stays on this Mac."
+                     : "No telemetry. Usage is read from \(Providers.claude.usageService) with each profile's own session, and stays on this Mac.")
                 Button("Show Welcome") {
                     store.showWelcome = true
                     openWindow(id: "main")

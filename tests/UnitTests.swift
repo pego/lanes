@@ -680,6 +680,15 @@ enum UnitTests {
             expect(s.profilesByProvider.first?.profiles == s.profiles)
         }
 
+        test("Privacy note: names chatgpt.com once a ChatGPT profile exists") {
+            let s = ProfileStore(live: false)
+            s.profiles = [Profile(name: "C1", dataDir: "/tmp/C1", colorName: "blue")]
+            // Claude only: it follows whether ChatGPT is on this Mac.
+            equal(s.involvesChatGPT, Providers.chatgpt.isInstalled)
+            s.profiles.append(Profile(name: "G1", dataDir: "/tmp/G1", colorName: "blue", providerID: "chatgpt"))
+            expect(s.involvesChatGPT)
+        }
+
         test("Menu bar: each lane's shortest limit, named honestly") {
             let now = Date()
             let claude = Usage(fiveHour: 41, sevenDay: 95)

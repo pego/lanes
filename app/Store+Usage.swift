@@ -220,6 +220,12 @@ extension ProfileStore {
         return withData.count >= 2 ? bestProfile(provider: provider) : nil
     }
 
+    // ChatGPT is on this Mac or has a profile here: the texts that name the
+    // services Lanes talks to name chatgpt.com too.
+    var involvesChatGPT: Bool {
+        Providers.chatgpt.isInstalled || profiles.contains { $0.providerID == Providers.chatgpt.id }
+    }
+
     // The "most room" cards: one per app that has a real choice, in the
     // apps' order. Claude-only, that's roomiestProfile().
     var roomiestPerProvider: [Profile] {

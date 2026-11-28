@@ -83,6 +83,10 @@ struct WelcomeSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
             point("person.crop.circle.badge.plus", "Sign in once per lane",
                   "The first time a lane opens, sign in with that account. Lanes sends the sign-in link back to the lane that asked for it.")
+            if Providers.chatgpt.isInstalled {
+                point("square.stack.3d.up.fill", "ChatGPT, too",
+                      "Lanes can also run ChatGPT profiles: New Profile → App. For their usage it reads the profile's own auth.json, never refreshes it, and only sends it to \(Providers.chatgpt.usageService).")
+            }
             point("stethoscope", "If something's off",
                   "Settings → Status checks everything Lanes depends on and fixes what it can. In the Terminal: lanes doctor.")
         }
