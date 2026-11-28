@@ -50,8 +50,8 @@ struct LanesWindow: View {
         VStack(spacing: 0) {
             header
             ScrollView {
-                if store.usageLooksBroken {
-                    UsageBrokenBanner(store: store)
+                if let broken = store.brokenUsageProvider {
+                    UsageBrokenBanner(store: store, provider: broken)
                         .padding(.horizontal, 20)
                         .padding(.bottom, 8)
                 }
@@ -72,7 +72,10 @@ struct LanesWindow: View {
         .sheet(isPresented: $store.showWelcome) { WelcomeSheet(store: store) }
         .sheet(isPresented: $store.showAdd) {
             AddSheet(existing: store.profiles.map(\.name), routesLinks: store.routeLinks,
-                     initialColor: freeColor) { name, color in store.add(name, color: color) }
+                     initialColor: freeColor,
+                     providers: Providers.all.filter { $0.id == Providers.claude.id || $0.isInstalled }) {
+                store.add($0, color: $1, provider: $2)
+            }
         }
         .confirmationDialog(
             "Remove “\(removing?.name ?? "")”?",
@@ -164,7 +167,7 @@ struct LanesWindow: View {
                     profile: p,
                     running: store.running.contains(p.id),
                     usage: store.usage[p.id],
-                    isRoomiest: store.roomiestProfile()?.id == p.id,
+                    isRoomiest: store.roomiestProfile(provider: p.providerID)?.id == p.id,
                     expanded: expanded == p.id,
                     toggle: {
                         withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
@@ -180,6 +183,7 @@ struct LanesWindow: View {
                         profile: p,
                         history: store.history[p.name] ?? [],
                         models: store.usage[p.id]?.models ?? [],
+                        limits: store.usage[p.id]?.limits ?? [],
                         alertAt: store.alertWarn,
                         version: store.claudeVersion(of: p),
                         dataPath: store.dataPath(of: p),
@@ -252,10 +256,10 @@ struct LaneRow<Detail: View>: View {
                     .font(.system(size: 22, weight: .heavy, design: .rounded).monospacedDigit())
                     .foregroundStyle(tint.opacity(running ? 1 : 0.55))
                     .frame(width: 34, alignment: .leading)
-                TintedClaudeIcon(color: profile.color, size: 42)
+                TintedClaudeIcon(color: profile.color, size: 42, provider: profile.provider)
                 identity
                     .frame(width: 168, alignment: .leading)
-                UsagePair(usage: usage, tint: tint, signIn: launch, retry: retry)
+                UsagePair(usage: usage, tint: tint, provider: profile.provider, signIn: launch, retry: retry)
                     .frame(maxWidth: 340)
                 Spacer(minLength: 12)
                 actions
@@ -358,6 +362,9 @@ struct LaneDetail: View {
     let profile: Profile
     let history: [UsageSample]
     var models: [ModelLimit] = []
+    // The profile's limits now, which name the chart's lines; Claude's pair
+    // until there's a reading.
+    var limits: [UsageLimit] = []
     var alertAt: Double = 80
     let version: String?
     let dataPath: String
@@ -409,7 +416,7 @@ struct LaneDetail: View {
                             .help("Reveal in Finder")
                     }
                 }
-                fact("Claude") {
+                fact(profile.provider.name) {
                     Text(version.map { "Version \($0)" }
                          ?? (profile.isDefault ? "Not installed" : "Set up on first launch"))
                 }
@@ -427,7 +434,7 @@ struct LaneDetail: View {
                                     }
                                     .font(.caption)
                                     LaneMeter(value: m.used, tint: tint,
-                                              pace: elapsedFraction(reset: m.reset, window: LimitWindow.week), height: 4)
+                                              pace: elapsedFraction(reset: m.reset, window: m.window), height: 4)
                                 }
                                 .help(resetText(m.reset).map { "\(m.label): its own weekly limit, \($0)." } ?? "")
                             }
@@ -452,11 +459,26 @@ struct LaneDetail: View {
         }
     }
 
+    // The history's two lines: the first limit ("5 hours", its daily
+    // "5-hour peak" by month) and the second ("Week"), if there is one.
+    private var charted: [UsageLimit] {
+        let l = Array(limits.prefix(2))
+        if !l.isEmpty { return l }
+        return profile.provider.id == Providers.claude.id
+            ? [ClaudeLimit.fiveHour(nil, reset: nil), ClaudeLimit.sevenDay(nil, reset: nil)] : []
+    }
+
     private var legend: some View {
         HStack(spacing: 12) {
-            legendItem(range == .month ? "5-hour peak" : "5 hours") { Capsule().fill(tint).frame(width: 12, height: 3) }
-            legendItem("Week") {
-                LaneMarking(opacity: 0.6).frame(width: 12)
+            if let first = charted.first {
+                legendItem(range == .month ? first.noun.replacingOccurrences(of: " limit", with: " peak") : first.label) {
+                    Capsule().fill(tint).frame(width: 12, height: 3)
+                }
+            }
+            if charted.count > 1 {
+                legendItem(charted[1].label) {
+                    LaneMarking(opacity: 0.6).frame(width: 12)
+                }
             }
         }
     }
@@ -668,22 +690,28 @@ struct NewLaneRow: View {
 struct AddSheet: View {
     let existing: [String]
     let routesLinks: Bool
-    let create: (String, String) -> Void
+    // The apps a profile can run here: Claude, and ChatGPT when it's
+    // installed. The choice only shows with more than one.
+    let providers: [any Provider]
+    let create: (String, String, String) -> Void   // name, color, provider id
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var colorName: String
+    @State private var providerID = Providers.defaultID
     @FocusState private var nameFocused: Bool
 
     init(existing: [String], routesLinks: Bool, initialColor: String, initialName: String = "",
-         create: @escaping (String, String) -> Void) {
+         providers: [any Provider] = [Providers.claude], create: @escaping (String, String, String) -> Void) {
         self.existing = existing
         self.routesLinks = routesLinks
+        self.providers = providers
         self.create = create
         _colorName = State(initialValue: initialColor)
         _name = State(initialValue: initialName)
     }
 
     private var color: ProfileColor { ProfileColor.named(colorName) }
+    private var provider: any Provider { Providers.named(providerID) }
     private var display: String { profileDisplayName(name) }
 
     private var problem: String? {
@@ -713,12 +741,24 @@ struct AddSheet: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                 }
+                if providers.count > 1 {
+                    VStack(alignment: .leading, spacing: 8) {
+                        SectionLabel("App")
+                        Picker("App", selection: $providerID) {
+                            ForEach(providers, id: \.id) { Text($0.name).tag($0.id) }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                    }
+                }
                 VStack(alignment: .leading, spacing: 8) {
                     SectionLabel("Color")
                     ColorSwatches(selected: colorName, size: 22) { colorName = $0 }
                 }
                 Label {
-                    Text(routesLinks
+                    Text(provider.id != Providers.claude.id
+                         ? "It starts empty and signs in on its own. Sign-in comes back to the \(provider.name) that started it, so sign in one profile at a time."
+                         : routesLinks
                          ? "It starts empty and signs in on its own. When you log in, Lanes hands the sign-in link back to this profile, even with others open."
                          : "It starts empty and signs in on its own. Before its first sign-in, quit every other Claude: the login link goes to whichever one is running.")
                 } icon: {
@@ -755,9 +795,9 @@ struct AddSheet: View {
             LinearGradient(colors: [color.swatch.opacity(0.42), color.swatch.opacity(0.06)],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
             VStack(spacing: 8) {
-                TintedClaudeIcon(color: color, size: 76)
+                TintedClaudeIcon(color: color, size: 76, provider: provider)
                     .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
-                Text("Claude \(display.isEmpty ? "…" : display)")
+                Text("\(provider.name) \(display.isEmpty ? "…" : display)")
                     .font(.system(size: 16, weight: .semibold))
                     .lineLimit(1)
                 Text("How it shows up in Spotlight and the Dock")
@@ -768,11 +808,12 @@ struct AddSheet: View {
         }
         .frame(height: 180)
         .animation(.easeOut(duration: 0.2), value: colorName)
+        .animation(.easeOut(duration: 0.2), value: providerID)
     }
 
     private func submit() {
         guard canCreate else { return }
-        create(display, colorName)
+        create(display, colorName, providerID)
         dismiss()
     }
 }

@@ -75,8 +75,8 @@ struct UsageWidgetView: View {
     private func content(_ snap: UsageSnapshot) -> some View {
         // Signed-in profiles first, busiest first: the ones worth watching.
         let rows = snap.profiles.sorted { a, b in
-            let x = a.error == nil ? (a.fiveHour ?? -1) : -2
-            let y = b.error == nil ? (b.fiveHour ?? -1) : -2
+            let x = a.error == nil ? (a.meters.first?.used ?? -1) : -2
+            let y = b.error == nil ? (b.meters.first?.used ?? -1) : -2
             return x > y
         }.prefix(maxRows)
         return VStack(alignment: .leading, spacing: family == .systemSmall ? 6 : 8) {
@@ -93,9 +93,20 @@ struct UsageWidgetView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    // "Claude usage" and "5-hour usage" while every profile is Claude's;
+    // just "Usage" once another provider's (and its windows) are in.
+    private func title(_ snap: UsageSnapshot) -> String {
+        let allClaude = snap.profiles.allSatisfy { $0.provider == nil }
+        if family == .systemSmall {
+            let fiveHours = snap.profiles.allSatisfy { ($0.meters.first?.window ?? ClaudeLimit.fiveHourWindow) == ClaudeLimit.fiveHourWindow }
+            return fiveHours ? "5-hour usage" : "Usage"
+        }
+        return allClaude ? "Claude usage" : "Usage"
+    }
+
     private func header(_ snap: UsageSnapshot) -> some View {
         HStack(spacing: 4) {
-            Text(family == .systemSmall ? "5-hour usage" : "Claude usage")
+            Text(title(snap))
                 .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
             Spacer(minLength: 0)
             // Only worth saying when the app stopped refreshing.
@@ -118,17 +129,18 @@ private struct SmallRow: View {
 
     var body: some View {
         let tint = ProfileColor.named(p.color).swatch
+        let first = p.meters.first
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 5) {
                 Capsule().fill(tint.opacity(p.running ? 1 : 0.4)).frame(width: 3, height: 11)
                 Text(p.name).font(.caption.weight(.semibold)).lineLimit(1)
                 Spacer(minLength: 2)
-                Text(statusText(p) ?? percent(p.fiveHour))
+                Text(statusText(p) ?? percent(first?.used))
                     .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
             }
-            if statusText(p) == nil {
-                LaneMeter(value: p.fiveHour, tint: tint,
-                          pace: elapsedFraction(reset: p.fiveHourReset, window: LimitWindow.fiveHour), height: 4)
+            if statusText(p) == nil, let first {
+                LaneMeter(value: first.used, tint: tint,
+                          pace: elapsedFraction(reset: first.reset, window: first.window), height: 4)
             }
         }
     }
@@ -150,8 +162,7 @@ private struct WideRow: View {
                 Text(status).font(.caption2).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
             } else {
-                column("5h", p.fiveHour, p.fiveHourReset, LimitWindow.fiveHour, tint)
-                column("Week", p.sevenDay, p.sevenDayReset, LimitWindow.week, tint)
+                ForEach(p.meters) { m in column(m.compactLabel, m.used, m.reset, m.window, tint) }
             }
         }
     }
@@ -179,8 +190,8 @@ struct LanesWidget: Widget {
         StaticConfiguration(kind: "LanesUsage", provider: UsageProvider()) { entry in
             UsageWidgetView(entry: entry)
         }
-        .configurationDisplayName("Claude Usage")
-        .description("5-hour and weekly usage for each profile.")
+        .configurationDisplayName("Lanes Usage")
+        .description("Usage limits for each profile.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }

@@ -1,19 +1,11 @@
-// System glue shared by the app: finding Claude, running the bundled tools,
-// notifications and global shortcuts.
+// System glue shared by the app: reading app versions, running the bundled
+// tools, notifications and global shortcuts. Finding each app is its
+// provider's job (Provider.swift).
 
 import SwiftUI
 import AppKit
 import UserNotifications
 import Carbon.HIToolbox
-
-let claudeAppPath: String = {
-    let candidates = ["/Applications/Claude.app",
-                      NSHomeDirectory() + "/Applications/Claude.app"]
-    return candidates.first { FileManager.default.fileExists(atPath: $0) } ?? candidates[0]
-}()
-
-// Read once: every lane, sheet and preview draws it, tinted per profile.
-let claudeIcon: NSImage = NSWorkspace.shared.icon(forFile: claudeAppPath)
 
 // Read fresh every call (NOT via Bundle(path:), which caches infoDictionary
 // and would miss a re-clone). Returns nil if the bundle/plist is absent.
@@ -134,6 +126,15 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     func cancel(_ identifiers: [String]) {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: identifiers)
+    }
+
+    // Cancels the pending notifications `stale` picks out of all pending ones.
+    func cancelPending(_ stale: @escaping ([String]) -> [String]) {
+        let c = UNUserNotificationCenter.current()
+        c.getPendingNotificationRequests { reqs in
+            let ids = stale(reqs.map(\.identifier))
+            if !ids.isEmpty { c.removePendingNotificationRequests(withIdentifiers: ids) }
+        }
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {

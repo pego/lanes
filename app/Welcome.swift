@@ -64,12 +64,13 @@ struct WelcomeSheet: View {
     }
 
     private var permissions: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let claude = Providers.claude
+        let keychain: String = "To read usage, Lanes needs the key \(claude.name) uses to protect its sign-in. Choose **Always Allow** so macOS asks only once. Lanes only reads it, and your session is only ever sent to \(claude.usageService)."
+        return VStack(alignment: .leading, spacing: 14) {
             Text("Two things macOS will ask").font(.system(size: 22, weight: .bold, design: .rounded))
             Text("Right after you continue. Here's what they are, so neither is a surprise.")
                 .foregroundStyle(.secondary)
-            point("key.fill", "Access to “Claude Safe Storage”",
-                  "To read usage, Lanes needs the key Claude uses to protect its sign-in. Choose **Always Allow** so macOS asks only once. Lanes only reads it, and your session is only ever sent to claude.ai.")
+            point("key.fill", "Access to “\(claude.keychainItem ?? "")”", LocalizedStringKey(keychain))
             point("bell.badge.fill", "Notifications",
                   "For a heads-up when a limit is close or about to run out, and when it resets. You pick the levels in Settings.")
         }

@@ -99,12 +99,13 @@ struct SettingsView: View {
         }
         Section {
             Toggle(isOn: $store.routeLinks) {
-                described("Send claude:// links to the right profile",
-                          "Sign-in and “open in app” links go to the profile they belong to. Off, macOS hands them to whichever Claude is running.")
+                described(Providers.chatgpt.isInstalled ? "Send claude:// and codex:// links to the right profile"
+                                                        : "Send claude:// links to the right profile",
+                          "Sign-in, app-connection and “open in app” links go to the profile they belong to. Off, macOS hands them to whichever copy of the app is running.")
             }
         } footer: {
             HStack(alignment: .top) {
-                note("No telemetry. Usage is read from claude.ai with each profile's own session, and stays on this Mac.")
+                note("No telemetry. Usage is read from \(Providers.claude.usageService) with each profile's own session, and stays on this Mac.")
                 Button("Show Welcome") {
                     store.showWelcome = true
                     openWindow(id: "main")

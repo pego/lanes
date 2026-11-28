@@ -26,12 +26,16 @@ picker instead. After that:
 ```
 bin/lanes             the whole engine: profiles, clones, launchers, watchdog, CLI
 app/Lanes.swift       the app's model: profiles, usage, alerts, link routing, scenes
+app/Provider.swift    the apps a profile can run, and what Lanes needs to know about each
+app/ClaudeProvider.swift  Claude Desktop: its app, processes, and usage from claude.ai
+app/ChatGPTProvider.swift ChatGPT: its app, and usage from chatgpt.com or its session logs
+app/Usage.swift       usage as Lanes keeps it, whatever the provider
 app/Window.swift      the window: lanes, drawers, history chart, new-profile sheet
 app/MenuBar.swift     the menu bar glyph and panel
 app/Settings.swift    settings
 app/Components.swift  shared views: meters, lane markings, tinted icons
 app/Changelog.swift   What's New: parses the bundled CHANGELOG.md
-app/Shared.swift      compiled into both app and widget: colors, usage snapshot, meter
+app/Shared.swift      compiled into both app and widget: colors, limits, usage snapshot, meter
 app/Widget.swift      the WidgetKit extension
 scripts/              release build, tests, releases, changelog, website, screenshots, the app icon
 CHANGELOG.md          release notes for GitHub, the website and What's New
@@ -41,6 +45,26 @@ The app is a front end. Creating, launching, recoloring and removing a
 profile all shell out to the copy of `lanes` inside the app bundle. The CLI,
 the launchers and the app therefore share one implementation, and the
 script is the place to change behavior.
+
+A profile runs one provider's app: Claude or ChatGPT. A profile folder
+names a provider other than Claude in a `.lanes-provider` file (missing
+means `claude`; `lanes add --provider` writes it), and `bin/lanes` keeps
+each provider's values in `provider_value` and `provider_launch_env`, the
+app in `Provider.swift`. Usage is a list of limits, each with its own
+window; usage.json and usage.tsv keep their two column pairs, filled from
+a profile's first two limits, and record those limits' windows for any
+provider but Claude (usage.tsv: in its last three columns, for every row).
+
+ChatGPT's code picks its data folder from `CODEX_ELECTRON_USER_DATA_PATH`.
+`--user-data-dir` alone also kept a clone apart in testing (26.1120), but
+its clones get both, as OpenAI's own demo launcher does, so isolation
+doesn't depend on which one wins in a later version. They also start with
+`CODEX_HOME` (sign-in, sessions) pointing into the profile folder (and
+`--user-data-dir` is what `ps` shows), and `CODEX_SPARKLE_ENABLED=false`, so a clone never
+updates itself and follows the installed app instead. Its usage comes from
+chatgpt.com's `wham/usage` with the token in the profile's
+`codex-home/auth.json`, which Lanes reads but never refreshes; the fallback
+is the newest `rate_limits` in `codex-home/sessions/`.
 
 Lanes builds with plain `swiftc`, with no Xcode project. `lanes gui` and the
 release build compile every file in `app/` except `Widget.swift` into the

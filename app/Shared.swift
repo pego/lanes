@@ -20,23 +20,26 @@ enum Brand {
     static let azure = adaptive(light: (0x1E, 0x88, 0xD6), dark: (0x88, 0xDC, 0xFF))
 }
 
-// Mirrors the HUES palette in bin/lanes — names must stay in sync.
+// Mirrors the HUES and PLATES palettes in bin/lanes — names must stay in sync.
 struct ProfileColor: Identifiable, Hashable {
     let name: String
     let hue: Double        // degrees of hue rotation applied to Claude's icon
-    let swatch: Color      // matching UI accent
+    // The matching UI accent, which is also the plate color of a monochrome
+    // icon (ChatGPT's; see IconStyle).
+    let r: Double, g: Double, b: Double
 
     var id: String { name }
+    var swatch: Color { Color(red: r, green: g, blue: b) }
 
     static let all: [ProfileColor] = [
-        ProfileColor(name: "orange", hue: 0,   swatch: Color(red: 0.85, green: 0.47, blue: 0.34)),
-        ProfileColor(name: "red",    hue: -25, swatch: Color(red: 0.86, green: 0.34, blue: 0.32)),
-        ProfileColor(name: "yellow", hue: 40,  swatch: Color(red: 0.80, green: 0.63, blue: 0.25)),
-        ProfileColor(name: "green",  hue: 110, swatch: Color(red: 0.36, green: 0.69, blue: 0.42)),
-        ProfileColor(name: "teal",   hue: 160, swatch: Color(red: 0.27, green: 0.65, blue: 0.62)),
-        ProfileColor(name: "blue",   hue: 200, swatch: Color(red: 0.33, green: 0.56, blue: 0.83)),
-        ProfileColor(name: "purple", hue: 250, swatch: Color(red: 0.62, green: 0.47, blue: 0.83)),
-        ProfileColor(name: "pink",   hue: 310, swatch: Color(red: 0.83, green: 0.42, blue: 0.62)),
+        ProfileColor(name: "orange", hue: 0,   r: 0.85, g: 0.47, b: 0.34),
+        ProfileColor(name: "red",    hue: -25, r: 0.86, g: 0.34, b: 0.32),
+        ProfileColor(name: "yellow", hue: 40,  r: 0.80, g: 0.63, b: 0.25),
+        ProfileColor(name: "green",  hue: 110, r: 0.36, g: 0.69, b: 0.42),
+        ProfileColor(name: "teal",   hue: 160, r: 0.27, g: 0.65, b: 0.62),
+        ProfileColor(name: "blue",   hue: 200, r: 0.33, g: 0.56, b: 0.83),
+        ProfileColor(name: "purple", hue: 250, r: 0.62, g: 0.47, b: 0.83),
+        ProfileColor(name: "pink",   hue: 310, r: 0.83, g: 0.42, b: 0.62),
     ]
 
     static func named(_ name: String) -> ProfileColor {
@@ -52,10 +55,83 @@ func usageColor(_ value: Double?, tint: Color) -> Color {
     return tint
 }
 
-// The two rolling limits claude.ai reports, and how long each window runs.
-enum LimitWindow {
-    static let fiveHour: TimeInterval = 5 * 3600
+// One rolling usage limit, as a provider reports it: how much of it is used,
+// when it resets and how long its window runs. A provider reports one or
+// several, in any lengths, shortest window first: Claude a 5-hour and a
+// weekly one.
+struct UsageLimit: Equatable, Identifiable {
+    var key: String          // the provider's name for it: "five_hour"
+    var label: String        // above its meter: "5 hours"
+    var used: Double?        // percent
+    var reset: Date?
+    var window: TimeInterval
+    // Where it's heading at the current rate (see Forecast).
+    var pace: Pace? = nil
+    var id: String { key }
+
+    // Its name in alert bookkeeping ("Work/5h") and notifications: "5h", "7d".
+    var tag: String { let s = Self.span(window); return "\(s.n)\(s.unit)" }
+    // In tight spots (the widget): "5h", "Week".
+    var compactLabel: String { window == Self.week ? "Week" : tag }
+    // In sentences: "5-hour limit", "weekly limit".
+    var noun: String {
+        if window == Self.week { return "weekly limit" }
+        let s = Self.span(window)
+        return "\(s.n)-\(["m": "minute", "h": "hour", "d": "day"][s.unit]!) limit"
+    }
+
     static let week: TimeInterval = 7 * 86400
+
+    // Above a meter, for a window a provider doesn't name: "5 hours",
+    // "Week", "30 days", "Day".
+    static func label(forWindow w: TimeInterval) -> String {
+        if w == week { return "Week" }
+        let s = span(w)
+        let unit = ["m": "minute", "h": "hour", "d": "day"][s.unit]!
+        if s.n == 1 { return unit.prefix(1).uppercased() + unit.dropFirst() }
+        return "\(s.n) \(unit)s"
+    }
+
+    // A window in whole days, else whole hours, else minutes.
+    static func span(_ w: TimeInterval) -> (n: Int, unit: String) {
+        let s = Int(w.rounded())
+        if s >= 86400, s % 86400 == 0 { return (s / 86400, "d") }
+        if s >= 3600, s % 3600 == 0 { return (s / 3600, "h") }
+        return (max(1, s / 60), "m")
+    }
+
+    // The window of a tag ("5h" → 5 hours), for a notification that outlived
+    // its usage reading.
+    static func window(ofTag tag: String) -> TimeInterval? {
+        guard let unit = tag.last, let n = Double(tag.dropLast()), n > 0 else { return nil }
+        switch unit {
+        case "m": return n * 60
+        case "h": return n * 3600
+        case "d": return n * 86400
+        default: return nil
+        }
+    }
+}
+
+// Where a limit is heading if usage keeps its recent rate.
+struct Pace: Equatable {
+    var atReset: Double     // projected percent when the window resets (capped at 100)
+    var runsOutAt: Date?    // when it hits 100%, if that's before the reset
+}
+
+// Claude's two limits. Here rather than with ClaudeProvider because
+// usage.json and usage.tsv have columns for exactly these two, and the
+// widget, which only reads usage.json, draws them.
+enum ClaudeLimit {
+    static let fiveHourWindow: TimeInterval = 5 * 3600
+    static let sevenDayWindow: TimeInterval = UsageLimit.week
+
+    static func fiveHour(_ used: Double?, reset: Date?, pace: Pace? = nil) -> UsageLimit {
+        UsageLimit(key: "five_hour", label: "5 hours", used: used, reset: reset, window: fiveHourWindow, pace: pace)
+    }
+    static func sevenDay(_ used: Double?, reset: Date?, pace: Pace? = nil) -> UsageLimit {
+        UsageLimit(key: "seven_day", label: "Week", used: used, reset: reset, window: sevenDayWindow, pace: pace)
+    }
 }
 
 // How far through its window a limit is (0…1), worked out from its reset
@@ -114,6 +190,8 @@ struct ModelLimit: Codable, Equatable, Identifiable {
     var used: Double      // percent
     var reset: Date?
     var id: String { key }
+    // Not stored: every one is weekly.
+    var window: TimeInterval { ClaudeLimit.sevenDayWindow }
 }
 
 // Written by the app after every usage refresh; read by the widget (sandboxed,
@@ -134,10 +212,21 @@ struct UsageSnapshot: Codable {
         var limits: [ModelLimit]? = nil
         // Set when the last check failed and these are the previous numbers.
         var staleSince: Date? = nil
+        // Only for a provider other than Claude (absent means Claude, whose
+        // windows are 5 hours and a week): its id, and how long the window
+        // of each column pair runs, in seconds (absent: no such limit).
+        var provider: String? = nil
+        var fiveHourWindow: Double? = nil
+        var sevenDayWindow: Double? = nil
         var id: String { name }
     }
     var updated: Date
     var profiles: [Entry]
+
+    // The file has a column pair for two limits: a profile's first (shortest
+    // window) in fiveHour…, its second in sevenDay…. Named after Claude's;
+    // another provider's entry says how long its windows run
+    // (fiveHourWindow, sevenDayWindow), so Claude's entries stay as they were.
 
     // The real home, not the sandbox container NSHomeDirectory() returns in the widget.
     static var directory: String {
@@ -158,5 +247,20 @@ struct UsageSnapshot: Codable {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .iso8601
         return try? d.decode(UsageSnapshot.self, from: data)
+    }
+}
+
+extension UsageSnapshot.Entry {
+    // The limits the file has columns for, as limits (see UsageSnapshot):
+    // Claude's two, or as many as the other provider's entry has windows for.
+    var meters: [UsageLimit] {
+        guard provider != nil else {
+            return [ClaudeLimit.fiveHour(fiveHour, reset: fiveHourReset),
+                    ClaudeLimit.sevenDay(sevenDay, reset: sevenDayReset)]
+        }
+        return [("primary", fiveHour, fiveHourReset, fiveHourWindow), ("secondary", sevenDay, sevenDayReset, sevenDayWindow)]
+            .compactMap { key, used, reset, window in
+                window.map { UsageLimit(key: key, label: UsageLimit.label(forWindow: $0), used: used, reset: reset, window: $0) }
+            }
     }
 }

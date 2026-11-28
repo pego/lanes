@@ -1,18 +1,22 @@
-// ProfileStore: claude:// link routing.
+// ProfileStore: claude:// and codex:// link routing.
 //
-// macOS hands a claude:// link (the sign-in token, "open in app" links)
-// to whichever Claude is running, since every clone shares one bundle id.
-// When routing is on, this app is the scheme's default handler instead and
-// forwards each link to one profile: NSWorkspace.open(_:withApplicationAt:)
+// macOS hands an app's link (Claude's sign-in token, ChatGPT's "connect an
+// app" callback, "open in app" links) to whichever copy of the app is
+// running, since every clone shares one bundle id. When routing is on, this
+// app is the default handler of each provider's scheme instead and forwards
+// each link to one profile of that provider: NSWorkspace.open(_:withApplicationAt:)
 // with that profile's clone delivers it to the running instance of exactly
-// that bundle. Claude re-registers itself as the handler on every launch,
-// so the 2 s poller claims it back.
+// that bundle. An app may re-register itself as the handler when it
+// launches, so the 2 s poller claims it back.
+//
+// The schemes are in Info.plist (bin/lanes writes it). Claude's is always
+// claimed; another app's only while it's installed.
 
 import AppKit
 
 extension ProfileStore {
     func bundlePath(for p: Profile) -> String {
-        p.isDefault ? claudeAppPath : clonesDir + "/Claude \(p.name).app"
+        p.isDefault ? p.provider.appPath : p.provider.clonePath(in: clonesDir, profile: p.name)
     }
 
     private func profileID(forBundle url: URL?) -> String? {
@@ -23,7 +27,7 @@ extension ProfileStore {
     private func runningApp(for p: Profile) -> NSRunningApplication? {
         let want = URL(fileURLWithPath: bundlePath(for: p)).standardizedFileURL.path
         return NSWorkspace.shared.runningApplications.first {
-            $0.bundleIdentifier == Self.claudeBundleID && $0.bundleURL?.standardizedFileURL.path == want
+            $0.bundleIdentifier == p.provider.bundleID && $0.bundleURL?.standardizedFileURL.path == want
         }
     }
 
@@ -33,52 +37,95 @@ extension ProfileStore {
         ) { [weak self] note in
             guard let self,
                   let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                  app.bundleIdentifier == Self.claudeBundleID,
+                  let provider = Providers.all.first(where: { $0.bundleID == app.bundleIdentifier }),
                   let id = self.profileID(forBundle: app.bundleURL) else { return }
-            self.lastActive = id
+            self.lastActive[provider.id] = id
         }
         claimLinksIfNeeded()
     }
 
-    // Cheap enough for the 2 s poller: one LaunchServices lookup, and a write
-    // only when Claude took the scheme back (throttled in case it fails).
+    // The apps whose links Lanes routes: Claude always, another only while
+    // it's installed (claiming a scheme for an app that isn't there would
+    // swallow its links).
+    var routedProviders: [any Provider] {
+        Providers.all.filter { $0.linkScheme != nil && ($0.id == Providers.claude.id || $0.isInstalled) }
+    }
+
+    // Cheap enough for the 2 s poller: one LaunchServices lookup per scheme,
+    // and a write only when an app took its scheme back (throttled in case
+    // it fails).
     func claimLinksIfNeeded() {
         guard routeLinks, !Bundle.main.bundlePath.contains("/AppTranslocation/") else { return }
-        // Compared by bundle id, the key LaunchServices stores the default
-        // under: with a second copy installed it may resolve to that path.
         let me = Bundle.main.bundleURL.standardizedFileURL
-        if let cur = NSWorkspace.shared.urlForApplication(toOpen: Self.probeURL),
-           Bundle(url: cur)?.bundleIdentifier == Bundle.main.bundleIdentifier { return }
-        if let t = lastClaim, Date().timeIntervalSince(t) < 10 { return }
-        lastClaim = Date()
-        NSWorkspace.shared.setDefaultApplication(at: me, toOpenURLsWithScheme: "claude") { _ in }
+        for provider in routedProviders {
+            guard let scheme = provider.linkScheme, !handlesLinks(of: provider) else { continue }
+            if let t = lastClaim[scheme], Date().timeIntervalSince(t) < 10 { continue }
+            lastClaim[scheme] = Date()
+            NSWorkspace.shared.setDefaultApplication(at: me, toOpenURLsWithScheme: scheme) { _ in }
+        }
+    }
+
+    // Whether macOS hands this app's links to Lanes. Compared by bundle id,
+    // the key LaunchServices stores the default under: with a second copy
+    // installed it may resolve to that path.
+    func handlesLinks(of provider: any Provider) -> Bool {
+        guard let probe = provider.probeURL,
+              let cur = NSWorkspace.shared.urlForApplication(toOpen: probe) else { return false }
+        return Bundle(url: cur)?.bundleIdentifier == Bundle.main.bundleIdentifier
     }
 
     func releaseLinks() {
-        NSWorkspace.shared.setDefaultApplication(at: URL(fileURLWithPath: claudeAppPath),
-                                                 toOpenURLsWithScheme: "claude") { _ in }
+        for provider in Providers.all {
+            guard let scheme = provider.linkScheme, provider.isInstalled else { continue }
+            NSWorkspace.shared.setDefaultApplication(at: URL(fileURLWithPath: provider.appPath),
+                                                     toOpenURLsWithScheme: scheme) { _ in }
+        }
+    }
+
+    // The app a link belongs to, by its scheme.
+    static func provider(forLink url: URL) -> (any Provider)? {
+        guard let scheme = url.scheme?.lowercased() else { return nil }
+        return Providers.all.first { $0.linkScheme?.lowercased() == scheme }
+    }
+
+    // The profiles a link may go to: those whose app owns its scheme. A
+    // claude:// sign-in token must never reach a ChatGPT clone, nor a
+    // codex:// callback a Claude one.
+    func linkTargets(for url: URL) -> [Profile] {
+        guard let provider = Self.provider(forLink: url) else { return [] }
+        return profiles.filter { $0.providerID == provider.id }
     }
 
     func route(_ url: URL) {
         refresh()
-        let live = profiles.filter { running.contains($0.id) }
+        guard let provider = Self.provider(forLink: url) else { return }
+        let targets = linkTargets(for: url)
+        guard !targets.isEmpty else { return }
+        let live = targets.filter { running.contains($0.id) }
         if live.count == 1 { deliver(url, to: live[0]); return }
         // None running: pick which to start. Several: the frontmost-most-recently
         // one is preselected, so Return confirms the usual case.
-        let preselect = live.first { $0.id == lastActive }?.id ?? live.first?.id ?? profiles.first?.id
-        if let p = pickProfile(for: url, preselect: preselect) { deliver(url, to: p) }
+        let preselect = live.first { $0.id == lastActive[provider.id] }?.id ?? live.first?.id ?? targets.first?.id
+        if let p = pickProfile(for: url, provider: provider, among: targets, preselect: preselect) { deliver(url, to: p) }
     }
 
-    private func pickProfile(for url: URL, preselect: String?) -> Profile? {
+    // The picker's hint: which profile a link like this belongs to.
+    static func linkHint(_ provider: any Provider) -> String {
+        provider.id == Providers.claude.id
+            ? "Sign-in links belong to the profile you clicked \"Log in\" in."
+            : "A link that finishes connecting an app belongs to the profile you started connecting in."
+    }
+
+    private func pickProfile(for url: URL, provider: any Provider, among targets: [Profile], preselect: String?) -> Profile? {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = "Open this Claude link in which profile?"
+        alert.messageText = "Open this \(provider.name) link in which profile?"
         // Never show the query: a sign-in link carries its token there.
         let where_ = [url.host, url.path.isEmpty ? nil : url.path].compactMap { $0 }.joined()
-        alert.informativeText = (where_.isEmpty ? "" : "claude://\(where_)\n\n")
-            + "Sign-in links belong to the profile you clicked \"Log in\" in."
+        alert.informativeText = (where_.isEmpty ? "" : "\(provider.linkScheme ?? "")://\(where_)\n\n")
+            + Self.linkHint(provider)
         let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 26), pullsDown: false)
-        for p in profiles {
+        for p in targets {
             let item = NSMenuItem(title: p.name + (running.contains(p.id) ? "" : "  (not running)"),
                                   action: nil, keyEquivalent: "")
             item.representedObject = p.id
@@ -91,7 +138,7 @@ extension ProfileStore {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn,
               let id = popup.selectedItem?.representedObject as? String else { return nil }
-        return profiles.first { $0.id == id }
+        return targets.first { $0.id == id }
     }
 
     private static func swatchImage(_ color: NSColor) -> NSImage {
@@ -103,7 +150,7 @@ extension ProfileStore {
     }
 
     private func deliver(_ url: URL, to p: Profile) {
-        lastActive = p.id
+        lastActive[p.providerID] = p.id
         if p.isDefault || running.contains(p.id) && runningApp(for: p) != nil {
             open(url, in: p)
             return
@@ -133,7 +180,7 @@ extension ProfileStore {
         } else if Date() < deadline {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.waitForLaunch(of: p, deadline: deadline, then: then) }
         } else {
-            linkFailed("\(p.name) didn't start in time, so the Claude link wasn't opened. Click it again.")
+            linkFailed("\(p.name) didn't start in time, so the \(p.provider.name) link wasn't opened. Click it again.")
         }
     }
 
@@ -142,7 +189,7 @@ extension ProfileStore {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Couldn't open the Claude link"
+        alert.messageText = "Couldn't open the link"
         alert.informativeText = message
         alert.runModal()
     }

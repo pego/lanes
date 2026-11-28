@@ -44,6 +44,42 @@ check "claude: passes args without --" cli_says "$work_cfg --version" claude wor
 check "claude: default clears CLAUDE_CONFIG_DIR" sh -c 'CLAUDE_CONFIG_DIR=/x HOME="$1" PATH="$1/bin:/usr/bin:/bin" zsh bin/lanes claude default 2>/dev/null | grep -qx "unset "' _ "$cli_home"
 check "claude: --best picks the roomiest" cli_says "$work_cfg " claude --best
 check "claude: unknown profile fails" sh -c '! HOME="$1" PATH="$1/bin:/usr/bin:/bin" zsh bin/lanes claude ghost' _ "$cli_home"
+# .lanes-provider: "claude" (or none) is today's behavior; a provider this
+# Lanes doesn't know is never launched (as Claude or otherwise).
+profiles_dir="$cli_home/Library/Application Support/Lanes/profiles"
+print claude > "$profiles_dir/Work/.lanes-provider"
+check "provider: an explicit claude changes nothing" cli_says "$work_cfg -p hi" claude work -- -p hi
+rm "$profiles_dir/Work/.lanes-provider"
+mkdir -p "$profiles_dir/Odd"
+print future-app > "$profiles_dir/Odd/.lanes-provider"
+check "provider: an unknown one isn't launched" sh -c '! HOME="$1" PATH="/usr/bin:/bin" zsh bin/lanes launch odd 2>"$1/err" && grep -q "runs .future-app., which this version of Lanes can.t launch" "$1/err"' _ "$cli_home"
+check "provider: its profile still lists" sh -c 'HOME="$1" zsh bin/lanes list | grep -q "^  Odd	"' _ "$cli_home"
+rm -rf "$profiles_dir/Odd" "$cli_home/err"
+# A ChatGPT profile: never Claude Code's, never "most room" for Claude.
+mkdir -p "$profiles_dir/Gpt"
+print chatgpt > "$profiles_dir/Gpt/.lanes-provider"
+check "provider: lanes claude refuses a ChatGPT profile" sh -c '! HOME="$1" PATH="$1/bin:/usr/bin:/bin" zsh bin/lanes claude gpt 2>"$1/err" && grep -q "runs ChatGPT, not Claude" "$1/err"' _ "$cli_home"
+printf 'Gpt\tteal\t0\t1\t\t1\t\t\t\t\t\t\tchatgpt\t18000\t604800\n' >> "$cli_home/Library/Application Support/Lanes/usage.tsv"
+check "provider: --best stays on Claude profiles" cli_says "$work_cfg " claude --best
+check "provider: ChatGPT clones get their own data and no self-update" sh -c 'out=$(zsh -c "source <(sed -n \"/^provider_launch_env()/,/^}/p\" bin/lanes); provider_launch_env chatgpt /p/Gpt; provider_launch_env claude /p/Work"); [ "$out" = "$(printf "CODEX_ELECTRON_USER_DATA_PATH=/p/Gpt\nCODEX_SPARKLE_ENABLED=false")" ]'
+rm -rf "$profiles_dir/Gpt" "$cli_home/err"
+# Other windows than Claude's are labeled by their window, in the status
+# line, run-out notes and history; Claude's output stays as it was.
+usage_tsv="$cli_home/Library/Application Support/Lanes/usage.tsv"
+cp "$usage_tsv" "$cli_home/usage.tsv.saved"
+far=$(( $(date +%s) + 10 * 86400 ))
+printf 'Free\tpink\t0\t40\t\t\t\t\t%s\t\t\t\tchatgpt\t2592000\t\nPlus\tteal\t0\t18\t\t33\t\t\t\t\t\t\tchatgpt\t18000\t604800\n' "$far" >> "$usage_tsv"
+check "statusline: a 30-day limit is labeled 30d" sh -c '[ "$(HOME="$1" NO_COLOR=1 zsh bin/lanes usage --statusline free)" = "Free · 30d 40% · out ~$(date -r "$2" "+%b %d %H:%M")" ]' _ "$cli_home" "$far"
+check "statusline: Plus reads like Claude's" cli_says "Plus · 5h 18% · week 33%" usage --statusline plus
+check "usage: a run-out over a week away shows its date" sh -c 'HOME="$1" NO_COLOR=1 zsh bin/lanes usage 2>&1 | grep -q "30-day limit is used up around $(date -r "$2" "+%b %d %H:%M")"' _ "$cli_home" "$far"
+cp "$cli_home/usage.tsv.saved" "$usage_tsv"
+hist="$cli_home/Library/Application Support/Lanes/usage-history.json"
+now=$(date +%s)
+print -r -- "{\"Work\":[{\"t\":$now,\"h\":12.5,\"w\":3}]}" > "$hist"
+check "history: Claude's columns unchanged" sh -c '[ "$(HOME="$1" zsh bin/lanes history | head -1)" = "profile,time,five_hour,weekly" ] && HOME="$1" zsh bin/lanes history | grep -q "^Work,.*,12.5,3$"' _ "$cli_home"
+print -r -- "{\"Work\":[{\"t\":$now,\"h\":12.5,\"w\":3}],\"Free\":[{\"t\":$now,\"h\":40,\"hw\":2592000}]}" > "$hist"
+check "history: other windows are named" sh -c 'out=$(HOME="$1" zsh bin/lanes history); [ "$(printf "%s\n" "$out" | head -1)" = "profile,time,limit1,window1,limit2,window2" ] && printf "%s\n" "$out" | grep -q "^Free,.*,40,30d,,$" && printf "%s\n" "$out" | grep -q "^Work,.*,12.5,5h,3,7d$"' _ "$cli_home"
+rm -f "$hist" "$cli_home/usage.tsv.saved"
 check "statusline: profile from CLAUDE_CONFIG_DIR" sh -c '[ "$(CLAUDE_CONFIG_DIR="$2" HOME="$1" NO_COLOR=1 zsh bin/lanes usage --statusline)" = "Work · 5h 20% · week 30%" ]' _ "$cli_home" "$work_cfg"
 check "statusline: Default without it" cli_says "Default · 5h 92% · week 10%" usage --statusline
 check "statusline: red at 90%" sh -c 'HOME="$1" zsh bin/lanes usage --statusline default | grep -q "$(printf "\033\\[31m92%%")"' _ "$cli_home"
@@ -76,6 +112,7 @@ check "widget is a WidgetKit extension" test "$(/usr/libexec/PlistBuddy -c 'Prin
 check "widget enters at NSExtensionMain" sh -c '"$1" 2>&1 | grep -q "XPC Service cannot be run directly"' _ "$WIDGET/Contents/MacOS/LanesWidget"
 check "widget is sandboxed" sh -c 'codesign -d --entitlements - "$1" 2>/dev/null | grep -q com.apple.security.app-sandbox' _ "$WIDGET"
 check "signature verifies" codesign --verify --deep --strict "$APP"
+check "Info.plist claims claude:// and codex://" sh -c '/usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes" "$1/Contents/Info.plist" | grep -q "claude" && /usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes" "$1/Contents/Info.plist" | grep -q "codex"' _ "$APP"
 check "Info.plist version is $version" test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$version"
 check "bundled lanes is bin/lanes" cmp bin/lanes "$APP/Contents/Resources/lanes"
 check "app has its icon" cmp app/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
@@ -125,6 +162,21 @@ mkdir -p "$sandbox/Library/Application Support/Lanes/profiles/Orphan"
 check "doctor: a missing launcher fails" sh -c '! HOME="$1" LANES_WATCH_LABEL="$2" zsh "$3" doctor >/dev/null 2>&1' _ "$sandbox" "$label" "$installed/Contents/Resources/lanes"
 check "doctor: flags it with a fix" doctor_says fail "launcher:Orphan"
 rmdir "$sandbox/Library/Application Support/Lanes/profiles/Orphan"
+# A ChatGPT profile, where ChatGPT is installed (its app is only read).
+if [[ -d /Applications/ChatGPT.app ]]; then
+  lanes_sb() { HOME="$sandbox" LANES_WATCH_LABEL="$label" LANES_FROM_CHOOSER=1 zsh "$installed/Contents/Resources/lanes" "$@" }
+  gpt_dir="$sandbox/Library/Application Support/Lanes/profiles/Gpt"
+  check "chatgpt: add --provider succeeds" lanes_sb add gpt --provider chatgpt --color blue
+  check "chatgpt: it records its provider" grep -qx chatgpt "$gpt_dir/.lanes-provider"
+  check "chatgpt: launcher is named after ChatGPT" test -x "$sandbox/Applications/ChatGPT Gpt.app/Contents/MacOS/applet"
+  check "chatgpt: launcher signature verifies" codesign --verify "$sandbox/Applications/ChatGPT Gpt.app"
+  check "chatgpt: a profile's app can't change" sh -c '! HOME="$1" LANES_FROM_CHOOSER=1 zsh "$2" add gpt --provider claude' _ "$sandbox" "$installed/Contents/Resources/lanes"
+  check "chatgpt: a Claude profile writes no provider file" test ! -e "$sandbox/Library/Application Support/Lanes/profiles/Test/.lanes-provider"
+  check "chatgpt: doctor checks ChatGPT is installed" doctor_says ok chatgpt
+  check "chatgpt: doctor finds its launcher" doctor_says ok "launcher:Gpt"
+  check "chatgpt: statusline leaves it out" sh -c '! HOME="$1" zsh "$2" statusline --tsv | grep -q "^Gpt"' _ "$sandbox" "$installed/Contents/Resources/lanes"
+  lanes_sb remove gpt --delete-data >/dev/null 2>&1
+fi
 touch -t 200001010000 "$launcher"
 setup --if-needed >/dev/null 2>&1
 check "setup --if-needed skips when current" test "$(stat -f %Sm -t %Y "$launcher")" = 2000

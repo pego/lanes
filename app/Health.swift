@@ -21,7 +21,7 @@ struct HealthCheck: Identifiable, Equatable {
         guard let fix else { return nil }
         switch fix {
         case "setup", "watchdog": return "Fix"
-        case "download-claude": return "Download"
+        case _ where fix.hasPrefix("download-"): return "Download"
         case "notifications-ask": return "Allow"
         case "notifications-settings": return "Open Settings"
         case "retry-keychain": return "Try Again"
@@ -95,22 +95,27 @@ extension ProfileStore {
                 out.append(HealthCheck(id: "notifications", status: .ok, title: "Notifications are allowed"))
             }
         }
+        let claude = Providers.claude
         switch ChromiumKey.state {
         case .denied(let why):
-            out.append(HealthCheck(id: "keychain-access", status: .fail, title: "Lanes can't read Claude's Keychain key",
-                                   detail: "\(why). Without it Lanes can't see usage. Try again and choose Always Allow when macOS asks about “Claude Safe Storage”.",
+            out.append(HealthCheck(id: "keychain-access", status: .fail, title: "Lanes can't read \(claude.name)'s Keychain key",
+                                   detail: "\(why). Without it Lanes can't see usage. Try again and choose Always Allow when macOS asks about “\(claude.keychainItem ?? "")”.",
                                    fix: "retry-keychain"))
         case .ok:
-            out.append(HealthCheck(id: "keychain-access", status: .ok, title: "Lanes can read Claude's Keychain key"))
+            out.append(HealthCheck(id: "keychain-access", status: .ok, title: "Lanes can read \(claude.name)'s Keychain key"))
         case .unknown:
             break
         }
         if routeLinks {
-            out.append(handlesLinks
-                       ? HealthCheck(id: "links", status: .ok, title: "claude:// links go through Lanes")
-                       : HealthCheck(id: "links", status: .warn, title: "claude:// links bypass Lanes",
-                                     detail: "Another app took them over; sign-in links may open in the wrong profile.",
-                                     fix: "claim-links"))
+            for provider in routedProviders {
+                guard let scheme = provider.linkScheme else { continue }
+                let id = provider.id == claude.id ? "links" : "links-\(provider.id)"
+                out.append(handlesLinks(of: provider)
+                           ? HealthCheck(id: id, status: .ok, title: "\(scheme):// links go through Lanes")
+                           : HealthCheck(id: id, status: .warn, title: "\(scheme):// links bypass Lanes",
+                                         detail: "Another app took them over; \(provider.id == claude.id ? "sign-in" : provider.name) links may open in the wrong profile.",
+                                         fix: "claim-links"))
+            }
         }
         if !launchAtLogin {
             out.append(HealthCheck(id: "login", status: .warn, title: "Lanes doesn't open at login",
@@ -119,18 +124,14 @@ extension ProfileStore {
         return out
     }
 
-    // Whether macOS hands claude:// links to this app.
-    var handlesLinks: Bool {
-        guard let cur = NSWorkspace.shared.urlForApplication(toOpen: URL(string: "claude://")!) else { return false }
-        return Bundle(url: cur)?.bundleIdentifier == Bundle.main.bundleIdentifier
-    }
-
     func fix(_ action: String) {
         guard live else { return }
         switch action {
         case "setup": runLanes(["setup"])
         case "watchdog": runLanes(["watchdog", "install"])
-        case "download-claude": NSWorkspace.shared.open(URL(string: "https://claude.ai/download")!)
+        case _ where action.hasPrefix("download-"):
+            // "download-claude", "download-chatgpt": lanes doctor's row for an app that isn't installed.
+            if let p = Providers.all.first(where: { "download-\($0.id)" == action }) { NSWorkspace.shared.open(p.downloadURL) }
         case "notifications-ask": Notifier.shared.setUp()
         case "notifications-settings":
             let id = Bundle.main.bundleIdentifier ?? ""
@@ -139,7 +140,7 @@ extension ProfileStore {
             ChromiumKey.reset()
             refreshUsage()
         case "claim-links":
-            lastClaim = nil
+            lastClaim = [:]
             claimLinksIfNeeded()
         case "login": setLaunchAtLogin(true)
         default:

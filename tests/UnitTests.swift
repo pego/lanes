@@ -98,6 +98,15 @@ enum UnitTests {
             expect(u.models.isEmpty)
         }
 
+        await test("An unknown provider's usage isn't read: it needs a newer Lanes") {
+            do { _ = try await Providers.named("future-app").fetchUsage(dataDir: "/x"); expect(false) }
+            catch {
+                let u = Usage(error: error.localizedDescription)
+                equal(u.error, "needs a newer Lanes")
+                expect(!u.needsSignIn)
+            }
+        }
+
         await test("usage() skips organizations without numbers") {
             let orgs = try fixtureJSON("organizations.json")
             var asked: [String] = []
@@ -208,7 +217,7 @@ enum UnitTests {
             equal(u.fiveHour, 40)
             equal(u.staleSince, at)
             equal(u.staleError, "HTTP 500")
-            expect(!u.fromClaudeDesktop)
+            expect(!u.fromLocalRecord)
             // Already stale: the clock runs from the first failure.
             equal(merge(failed, prev: u, at: now, local: nil).staleSince, at)
             // Past the hour: blank.
@@ -221,7 +230,7 @@ enum UnitTests {
             equal(u.fiveHour, 55)
             equal(u.sevenDay, 21)
             equal(u.staleSince, local.t)
-            expect(u.fromClaudeDesktop)
+            expect(u.fromLocalRecord)
             // The previous reset times still ahead, and after the reading, are kept.
             equal(u.fiveHourReset, ok.fiveHourReset)
             equal(u.sevenDayReset, ok.sevenDayReset)
@@ -231,7 +240,7 @@ enum UnitTests {
             let local = LocalUsage.Reading(t: now.addingTimeInterval(-1200), fiveHour: 5, sevenDay: 5)
             let u = merge(failed, prev: ok, at: now.addingTimeInterval(-600), local: local)
             equal(u.fiveHour, 40)
-            expect(!u.fromClaudeDesktop)
+            expect(!u.fromLocalRecord)
         }
 
         test("merge: no reading of Lanes' own yet (launched offline)") {
@@ -240,7 +249,7 @@ enum UnitTests {
             equal(u.fiveHour, 12)
             equal(u.sevenDay, nil)
             equal(u.fiveHourReset, nil)
-            expect(u.fromClaudeDesktop)
+            expect(u.fromLocalRecord)
             expect(!u.hasNoData)
             // Too old to show.
             let old = LocalUsage.Reading(t: now.addingTimeInterval(-7200), fiveHour: 12, sevenDay: nil)
@@ -297,12 +306,12 @@ enum UnitTests {
         test("Forecast.pace projects the recent rate to the reset") {
             let reset = now.addingTimeInterval(2 * 3600)
             // 10% → 30% over the last hour: 20%/h, two hours left.
-            let p = Forecast.pace(value: 30, reset: reset, window: LimitWindow.fiveHour,
+            let p = Forecast.pace(value: 30, reset: reset, window: ClaudeLimit.fiveHourWindow,
                                   samples: [(now.addingTimeInterval(-3600), 10)], lookback: 3600, minSpan: 900, now: now)
             equal(p.map { ($0.atReset * 10).rounded() / 10 }, 70)
             equal(p?.runsOutAt, nil)
             // 40%/h from 60%: out in an hour, before the reset.
-            let fast = Forecast.pace(value: 60, reset: reset, window: LimitWindow.fiveHour,
+            let fast = Forecast.pace(value: 60, reset: reset, window: ClaudeLimit.fiveHourWindow,
                                      samples: [(now.addingTimeInterval(-3600), 20)], lookback: 3600, minSpan: 900, now: now)
             equal(fast?.atReset, 100)
             equal(fast?.runsOutAt.map { Int($0.timeIntervalSince(now)) }, 3600)
@@ -310,16 +319,463 @@ enum UnitTests {
 
         test("Forecast.pace needs enough history, in this window") {
             let reset = now.addingTimeInterval(2 * 3600)
-            equal(Forecast.pace(value: 30, reset: reset, window: LimitWindow.fiveHour,
+            equal(Forecast.pace(value: 30, reset: reset, window: ClaudeLimit.fiveHourWindow,
                                 samples: [(now.addingTimeInterval(-300), 10)], lookback: 3600, minSpan: 900, now: now), nil)
             // A reading from before the window started (reset - 5h) doesn't count.
-            equal(Forecast.pace(value: 30, reset: now.addingTimeInterval(4.9 * 3600), window: LimitWindow.fiveHour,
+            equal(Forecast.pace(value: 30, reset: now.addingTimeInterval(4.9 * 3600), window: ClaudeLimit.fiveHourWindow,
                                 samples: [(now.addingTimeInterval(-1800), 10)], lookback: 3600, minSpan: 900, now: now), nil)
             // Usage going down (a reset in between) counts as none.
-            equal(Forecast.pace(value: 30, reset: reset, window: LimitWindow.fiveHour,
+            equal(Forecast.pace(value: 30, reset: reset, window: ClaudeLimit.fiveHourWindow,
                                 samples: [(now.addingTimeInterval(-3600), 80)], lookback: 3600, minSpan: 900, now: now)?.atReset, 30)
-            equal(Forecast.pace(value: 100, reset: reset, window: LimitWindow.fiveHour,
+            equal(Forecast.pace(value: 100, reset: reset, window: ClaudeLimit.fiveHourWindow,
                                 samples: [(now.addingTimeInterval(-3600), 10)], lookback: 3600, minSpan: 900, now: now), nil)
+        }
+
+        // MARK: providers
+
+        test("A profile's .lanes-provider names its provider, missing means claude") {
+            let dir = NSTemporaryDirectory() + "lanes-provider-test-\(UUID().uuidString)"
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: dir) }
+            let file = dir + "/.lanes-provider"
+            equal(Providers.id(ofProfileAt: dir), "claude")
+            for (text, id) in [("claude\n", "claude"), (" chatgpt \r\nignored", "chatgpt"), ("", "claude"),
+                               ("\nchatgpt", "claude"), ("  \n", "claude")] {
+                try text.write(toFile: file, atomically: true, encoding: .utf8)
+                equal(Providers.id(ofProfileAt: dir), id)
+            }
+            // A provider this Lanes doesn't know is never taken for Claude
+            // (bin/lanes refuses to launch it): shown as it is, unread.
+            equal(Providers.named("chatgpt").id, "chatgpt")
+            let unknown = Providers.named("future-app")
+            equal(unknown.id, "future-app")
+            expect(!unknown.isKnown && Providers.claude.isKnown && Providers.chatgpt.isKnown)
+            expect(!unknown.isMainProcess("/Applications/Claude.app/Contents/MacOS/Claude --user-data-dir=/x"))
+            expect(!unknown.isMainProcess("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT --user-data-dir=/x"))
+            equal(unknown.linkScheme, nil)
+            equal(unknown.renewsSignIn, false)
+            equal(Profile(name: "Odd", dataDir: dir, colorName: "blue", providerID: "future-app").provider.id, "future-app")
+            let p = Profile(name: "Work", dataDir: dir, colorName: "blue")
+            equal(p.providerID, "claude")
+            equal(p.provider.id, "claude")
+        }
+
+        test("An app installed while Lanes runs is seen at once, with its icon") {
+            let dir = NSTemporaryDirectory() + "lanes-install-test-\(UUID().uuidString)"
+            defer { try? FileManager.default.removeItem(atPath: dir) }
+            let app = dir + "/Some.app"
+            equal(installedCandidate([app]), nil)
+            let before = AppIcons.icon(at: app)
+            expect(AppIcons.icon(at: app) === before)
+            try FileManager.default.createDirectory(atPath: app + "/Contents", withIntermediateDirectories: true)
+            equal(installedCandidate(["/nonexistent-lanes-test.app", app]), app)
+            expect(AppIcons.icon(at: app) !== before)
+            // ChatGPT's install is looked up live, not kept from launch.
+            let g = Providers.chatgpt
+            equal(g.isInstalled, g.appCandidates.contains { FileManager.default.fileExists(atPath: $0) })
+            equal(g.appPath, installedApp(g.appCandidates))
+        }
+
+        test("ClaudeProvider: the values bin/lanes keeps too") {
+            let c = Providers.claude
+            equal(c.id, "claude")
+            equal(c.executable, "Claude")
+            equal(c.bundleID, "com.anthropic.claudefordesktop")
+            equal(c.configEnv, "CLAUDE_CONFIG_DIR")
+            equal(c.configSubdir, "claude-config")
+            equal(c.linkScheme, "claude")
+            equal(c.probeURL, URL(string: "claude://"))
+            equal(c.appCandidates, ["/Applications/Claude.app", NSHomeDirectory() + "/Applications/Claude.app"])
+            equal(c.clonePath(in: "/c", profile: "Work"), "/c/Claude Work.app")
+            expect(c.updater == .squirrel && c.iconStyle == .hueShift)
+        }
+
+        test("Process matching: main processes only, the install apart from clones") {
+            let c = Providers.claude
+            let main = "/Applications/Claude.app/Contents/MacOS/Claude"
+            let clone = "/x/apps/Claude Work.app/Contents/MacOS/Claude --user-data-dir=/x/profiles/Work"
+            let helper = "/x/apps/Claude Work.app/Contents/Frameworks/Claude Helper (Renderer).app/Contents/MacOS/Claude Helper (Renderer) --user-data-dir=/x/profiles/Work"
+            expect(c.isMainProcess(main) && c.isInstalledApp(main))
+            expect(c.isMainProcess(clone) && !c.isInstalledApp(clone))
+            expect(!c.isMainProcess(helper))
+            expect(!c.isMainProcess("/Applications/Lanes.app/Contents/MacOS/Lanes"))
+        }
+
+        test("ChatGPTProvider: the values bin/lanes keeps too") {
+            let g = Providers.chatgpt
+            equal(g.id, "chatgpt")
+            equal(g.name, "ChatGPT")
+            equal(g.executable, "ChatGPT")
+            equal(g.bundleID, "com.openai.codex")
+            equal(g.configEnv, "CODEX_HOME")
+            equal(g.configSubdir, "codex-home")
+            equal(g.linkScheme, "codex")
+            equal(g.probeURL, URL(string: "codex://"))
+            equal(g.keychainItem, nil)
+            equal(g.appCandidates, ["/Applications/ChatGPT.app", NSHomeDirectory() + "/Applications/ChatGPT.app"])
+            equal(g.clonePath(in: "/c", profile: "Work"), "/c/ChatGPT Work.app")
+            expect(g.updater == .sparkle && g.iconStyle == .tintedPlate)
+            // An expired ChatGPT sign-in renews once the app runs; Claude's doesn't.
+            expect(g.renewsSignIn && !Providers.claude.renewsSignIn)
+            // Its processes and Claude's are told apart; helpers and the
+            // bundled codex CLI aren't main processes.
+            let clone = "/x/apps/ChatGPT Work.app/Contents/MacOS/ChatGPT --user-data-dir=/x/profiles/Work"
+            let cli = "/x/apps/ChatGPT Work.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex app-server"
+            let helper = "/x/apps/ChatGPT Work.app/Contents/Frameworks/ChatGPT Helper (GPU).app/Contents/MacOS/ChatGPT Helper (GPU) --user-data-dir=/x/profiles/Work"
+            expect(g.isMainProcess(clone) && !g.isInstalledApp(clone))
+            expect(g.isInstalledApp("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"))
+            expect(!g.isMainProcess(cli) && !g.isMainProcess(helper))
+            expect(!Providers.claude.isMainProcess(clone) && !g.isMainProcess("/Applications/Claude.app/Contents/MacOS/Claude"))
+        }
+
+        test("ChatGPT usage: Plus has a 5-hour and a weekly window") {
+            let u = try ChatGPTUsage.parse(try fixture("wham-usage-plus.json"))
+            equal(u.limits.map(\.key), ["primary", "secondary"])
+            equal(u.limits.map(\.window), [18000, 604800])
+            equal(u.limits.map(\.label), ["5 hours", "Week"])
+            equal(u.limits.map(\.tag), ["5h", "7d"])
+            equal(u.primary?.used, 23)
+            equal(u.secondary?.used, 41)
+            equal(u.primary?.reset, Date(timeIntervalSince1970: 1790009000))
+            equal(u.error, nil)
+        }
+
+        test("ChatGPT usage: Free has one 30-day window, reset from reset_after_seconds") {
+            let now = Date(timeIntervalSince1970: 1790000000)
+            let u = try ChatGPTUsage.parse(try fixture("wham-usage-free.json"), now: now)
+            equal(u.limits.count, 1)
+            equal(u.primary?.window, 30 * 86400)
+            equal(u.primary?.label, "30 days")
+            equal(u.primary?.noun, "30-day limit")
+            equal(u.primary?.used, 40)
+            equal(u.primary?.reset, now.addingTimeInterval(864000))
+            equal(u.secondary, nil)
+        }
+
+        test("ChatGPT usage: another reply shape is a format change") {
+            for body in ["{}", "{\"rate_limit\": {}}", "[]", "not json"] {
+                do { _ = try ChatGPTUsage.parse(Data(body.utf8)); expect(false, body) }
+                catch { expect(isFormatError(error), body) }
+            }
+        }
+
+        test("ChatGPT sign-in: auth.json's token and account, never an expired one") {
+            func jwt(exp: Double) -> String {
+                let claims = try! JSONSerialization.data(withJSONObject: ["exp": exp])
+                let b64 = claims.base64EncodedString().replacingOccurrences(of: "=", with: "")
+                    .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+                return "eyJhbGciOiJub25lIn0.\(b64).sig"
+            }
+            let now = Date(timeIntervalSince1970: 1790000000)
+            func auth(_ token: String) -> Data {
+                Data("{\"auth_mode\":\"chatgpt\",\"tokens\":{\"access_token\":\"\(token)\",\"account_id\":\"acc-1\"}}".utf8)
+            }
+            let ok = try ChatGPTAuth.parse(auth(jwt(exp: 1790003600)), now: now)
+            equal(ok.accountID, "acc-1")
+            equal(ChatGPTAuth.jwtExpiry(ok.accessToken), Date(timeIntervalSince1970: 1790003600))
+            do { _ = try ChatGPTAuth.parse(auth(jwt(exp: 1789999999)), now: now); expect(false) }
+            catch { equal(error.localizedDescription, "session expired") }
+            for body in ["{\"OPENAI_API_KEY\":\"sk-x\",\"tokens\":null}", "{}", "nope"] {
+                do { _ = try ChatGPTAuth.parse(Data(body.utf8), now: now); expect(false, body) }
+                catch { equal(error.localizedDescription, "not signed in") }
+            }
+            // A missing file is "not signed in", which Usage treats as such.
+            do { _ = try ChatGPTAuth.read(codexHome: "/nonexistent-lanes-test"); expect(false) }
+            catch { expect(Usage(error: error.localizedDescription).needsSignIn) }
+        }
+
+        test("ChatGPT's own record: the newest rate_limits, with reset times") {
+            let home = NSTemporaryDirectory() + "lanes-codex-test-\(UUID().uuidString)"
+            defer { try? FileManager.default.removeItem(atPath: home) }
+            let day = home + "/sessions/2026/11/27", older = home + "/sessions/2026/11/26"
+            try FileManager.default.createDirectory(atPath: day, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(atPath: older, withIntermediateDirectories: true)
+            try fixture("codex-session.jsonl").write(to: URL(fileURLWithPath: day + "/rollout-b.jsonl"))
+            try Data("{\"timestamp\":\"2026-11-26T00:00:00Z\",\"payload\":{\"rate_limits\":{\"primary\":{\"used_percent\":99,\"window_minutes\":300}}}}\n".utf8)
+                .write(to: URL(fileURLWithPath: older + "/rollout-a.jsonl"))
+            let r = ChatGPTUsage.latestLocal(codexHome: home)
+            equal(r?.t, iso("2026-11-27T06:19:50Z").addingTimeInterval(0.381))
+            equal(r?.limits.map(\.used), [11, 10])
+            equal(r?.limits.map(\.window), [18000, 604800])
+            equal(r?.limits.first?.reset, Date(timeIntervalSince1970: 1790009000))
+            equal(ChatGPTUsage.latestLocal(codexHome: "/nonexistent-lanes-test"), nil)
+            // A resumed session appends to its older-dated file: its newer
+            // reading wins over the newer-dated file's.
+            let resumed = "{\"timestamp\":\"2026-11-27T07:00:00Z\",\"payload\":{\"rate_limits\":{\"limit_id\":\"codex\",\"primary\":{\"used_percent\":42,\"window_minutes\":300}}}}\n"
+            let h = try FileHandle(forWritingTo: URL(fileURLWithPath: older + "/rollout-a.jsonl"))
+            h.seekToEndOfFile(); h.write(Data(resumed.utf8)); try h.close()
+            equal(ChatGPTUsage.latestLocal(codexHome: home)?.limits.map(\.used), [42])
+            // Another limit (not the account's own) isn't read.
+            let other = "{\"timestamp\":\"2026-11-27T00:00:00Z\",\"payload\":{\"rate_limits\":{\"limit_id\":\"x\",\"primary\":{\"used_percent\":1,\"window_minutes\":300}}}}"
+            equal(ChatGPTUsage.localReading(Data(other.utf8)), nil)
+        }
+
+        test("Window labels for windows a provider doesn't name") {
+            equal(UsageLimit.label(forWindow: 5 * 3600), "5 hours")
+            equal(UsageLimit.label(forWindow: 7 * 86400), "Week")
+            equal(UsageLimit.label(forWindow: 30 * 86400), "30 days")
+            equal(UsageLimit.label(forWindow: 86400), "Day")
+            equal(UsageLimit.label(forWindow: 3600), "Hour")
+        }
+
+        // MARK: limits as data
+
+        test("Claude's usage is the 5-hour + weekly pair, in that order") {
+            let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+            var u = Usage(fiveHour: 42, sevenDay: 17, fiveHourReset: t0 + 3600, sevenDayReset: t0 + 86400)
+            equal(u.limits.map(\.key), ["five_hour", "seven_day"])
+            equal(u.limits.map(\.label), ["5 hours", "Week"])
+            equal(u.limits.map(\.window), [5 * 3600, 7 * 86400])
+            equal(u.limits.map(\.tag), ["5h", "7d"])
+            equal(u.limits.map(\.compactLabel), ["5h", "Week"])
+            equal(u.limits.map(\.noun), ["5-hour limit", "weekly limit"])
+            equal(u.primary?.used, 42)
+            equal(u.secondary?.used, 17)
+            u.sevenDayReset = nil
+            equal(u.limit("seven_day")?.reset, nil)
+            equal(u.fiveHourReset, t0 + 3600)
+            // Both always there, even unknown: that's what hasNoData and the
+            // snapshot's columns rely on.
+            let none = Usage(fiveHour: nil, sevenDay: nil)
+            equal(none.limits.count, 2)
+            expect(none.hasNoData)
+            // A Claude limit set on usage that lacks it lands in window order.
+            var partial = Usage(limits: [ClaudeLimit.sevenDay(5, reset: nil)])
+            partial.fiveHour = 9
+            equal(partial.limits.map(\.key), ["five_hour", "seven_day"])
+        }
+
+        test("A single 30-day window is a full set of limits") {
+            let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+            let month: TimeInterval = 30 * 86400
+            let l = UsageLimit(key: "primary", label: "30 days", used: 40, reset: t0 + 10 * 86400, window: month)
+            let u = Usage(limits: [l])
+            equal(u.primary?.key, "primary")
+            equal(u.secondary, nil)
+            expect(!u.hasNoData)
+            equal(l.tag, "30d")
+            equal(l.compactLabel, "30d")
+            equal(l.noun, "30-day limit")
+            equal(UsageLimit.window(ofTag: l.tag), month)
+            // 20 of its 30 days have passed.
+            equal(elapsedFraction(reset: l.reset, window: month, now: t0).map { ($0 * 1000).rounded() }, 667)
+            // Forecast: 10% → 40% over the last 3 days, 10 days left.
+            let p = Forecast.pace(l, samples: [(t0 - 3 * 86400, 10)], now: t0)
+            equal(p?.atReset, 100)
+            equal(p?.runsOutAt.map { Int($0.timeIntervalSince(t0)) }, 6 * 86400)
+            // History holds it as the first limit.
+            equal(UsageSample(t: t0, h: 40, w: nil).value(at: 0), 40)
+
+            // It ranks and publishes like Claude's first limit; no second
+            // column, and the file says how long its window runs.
+            let s = ProfileStore(live: false)
+            s.profiles = [Profile(name: "Free", dataDir: "/tmp/Free", colorName: "blue", providerID: "chatgpt"),
+                          Profile(name: "Plus", dataDir: "/tmp/Plus", colorName: "blue", providerID: "chatgpt"),
+                          Profile(name: "Claude", dataDir: "/tmp/Claude", colorName: "orange")]
+            s.usage = ["Free": u, "Plus": Usage(limits: [ClaudeLimit.fiveHour(60, reset: nil)]),
+                       "Claude": Usage(fiveHour: 1, sevenDay: 1)]
+            equal(s.bestProfile(provider: "chatgpt")?.name, "Free")
+            let e = s.snapshotEntries()[0]
+            equal(e.fiveHour, 40)
+            equal(e.sevenDay, nil)
+            equal(e.fiveHourReset, l.reset)
+            equal(e.provider, "chatgpt")
+            equal(e.fiveHourWindow, month)
+            equal(e.sevenDayWindow, nil)
+            equal(e.meters.map(\.label), ["30 days"])
+            equal(ProfileStore.usageTSV([e], updated: t0),
+                  "# updated 1790000000\nFree\tblue\t0\t40\t1790864000\t\t\t\t\t\t\t\tchatgpt\t2592000\t\n")
+            let json = String(decoding: try UsageSnapshot.encoder.encode(e), as: UTF8.self)
+            expect(json.contains("\"provider\" : \"chatgpt\"") && json.contains("\"fiveHourWindow\" : 2592000"), json)
+            expect(!json.contains("sevenDayWindow"), json)
+        }
+
+        test("usage.json: a Claude entry has no provider or window fields; usage.tsv adds them at the end") {
+            let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+            let s = ProfileStore(live: false)
+            s.profiles = [Profile(name: "Work", dataDir: "/tmp/Work", colorName: "blue")]
+            s.usage = ["Work": Usage(fiveHour: 20, sevenDay: 30)]
+            let e = s.snapshotEntries()[0]
+            equal(e.provider, nil)
+            equal(e.fiveHourWindow, nil)
+            let json = String(decoding: try UsageSnapshot.encoder.encode(e), as: UTF8.self)
+            expect(!json.contains("provider") && !json.contains("Window"), json)
+            equal(e.meters.map(\.label), ["5 hours", "Week"])
+            equal(ProfileStore.usageTSV([e], updated: t0),
+                  "# updated 1790000000\nWork\tblue\t0\t20\t\t30\t\t\t\t\t\t\tclaude\t18000\t604800\n")
+            // An older app's entry (no provider) reads as Claude's.
+            let old = try JSONDecoder().decode(UsageSnapshot.Entry.self,
+                                                from: Data("{\"name\":\"A\",\"color\":\"red\",\"running\":false,\"fiveHour\":5}".utf8))
+            equal(old.meters.map(\.window), [ClaudeLimit.fiveHourWindow, ClaudeLimit.sevenDayWindow])
+        }
+
+        test("History: windows only when not Claude's; forecasts skip another window's readings") {
+            let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+            let claude = UsageSample(t: t0, h: 1, w: 2, hWindow: 18000, wWindow: 604800)
+            equal(claude.hw, nil)
+            equal(claude.ww, nil)
+            let e = JSONEncoder()
+            e.dateEncodingStrategy = .secondsSince1970
+            // Sorted keys: JSONEncoder's key order otherwise varies run to run.
+            e.outputFormatting = .sortedKeys
+            equal(try e.encode(claude), try e.encode(UsageSample(t: t0, h: 1, w: 2)))
+            expect(!String(decoding: try e.encode(claude), as: UTF8.self).contains("hw"))
+            let free = UsageSample(t: t0, h: 40, w: nil, hWindow: 30 * 86400, wWindow: nil)
+            equal(free.window(at: 0), 30 * 86400)
+            equal(free.window(at: 1), ClaudeLimit.sevenDayWindow)
+            expect(String(decoding: try e.encode(free), as: UTF8.self).contains("\"hw\":2592000"))
+
+            // A profile that went from Free (30 days) to Plus (5 hours): the
+            // 30-day readings don't feed the 5-hour forecast.
+            let now = Date()
+            var plus = Usage(limits: [ClaudeLimit.fiveHour(50, reset: now + 3600)])
+            ProfileStore.forecast(&plus, history: [UsageSample(t: now - 1800, h: 0, w: nil, hWindow: 30 * 86400, wWindow: nil)], now: now)
+            equal(plus.primary?.pace, nil)
+            ProfileStore.forecast(&plus, history: [UsageSample(t: now - 1800, h: 0, w: nil)], now: now)
+            expect(plus.primary?.pace != nil)
+        }
+
+        test("Most room: within one provider; Claude's first when none is given") {
+            let s = ProfileStore(live: false)
+            s.profiles = [Profile(name: "C1", dataDir: "/tmp/C1", colorName: "blue"),
+                          Profile(name: "C2", dataDir: "/tmp/C2", colorName: "blue"),
+                          Profile(name: "G1", dataDir: "/tmp/G1", colorName: "blue", providerID: "chatgpt"),
+                          Profile(name: "G2", dataDir: "/tmp/G2", colorName: "blue", providerID: "chatgpt")]
+            s.usage = ["C1": Usage(fiveHour: 90, sevenDay: 10), "C2": Usage(fiveHour: 70, sevenDay: 10),
+                       "G1": Usage(fiveHour: 5, sevenDay: 10), "G2": Usage(fiveHour: 30, sevenDay: 10)]
+            equal(s.bestProfile()?.name, "C2")
+            equal(s.bestProfile(provider: "chatgpt")?.name, "G1")
+            equal(s.roomiestProfile(provider: "chatgpt")?.name, "G1")
+            // A Claude lane near its limit is pointed at another Claude lane,
+            // never at a roomier ChatGPT one.
+            equal(s.alternative(to: "G2")?.name, "G1")
+            equal(s.alternative(to: "C1"), nil)
+            equal(s.bestToLaunch?.name, "C2")
+            // Only ChatGPT lanes with numbers: that's the best there is.
+            s.usage = ["G1": Usage(fiveHour: 5, sevenDay: 10)]
+            equal(s.bestProfile()?.name, "G1")
+            // ⌥⌘B stays on Claude, like `lanes launch --best`.
+            equal(s.bestToLaunch?.name, nil)
+        }
+
+        test("Reset alerts: one the usage no longer has is cancelled") {
+            let pending = ["reset-5h-Work", "reset-7d-Work", "reset-30d-Work", "reset-5h-Work-2",
+                           "reset-5h-Personal", "whats-new", "x-reset-5h-Work"]
+            // Signed out or an error: no limits, so every reset alert goes.
+            equal(ProfileStore.staleResetAlerts(pending, profile: "Work", keep: []),
+                  ["reset-5h-Work", "reset-7d-Work", "reset-30d-Work"])
+            // A plan change from 5h/7d to 30d keeps the new one only.
+            equal(ProfileStore.staleResetAlerts(pending, profile: "Work", keep: ["reset-30d-Work"]),
+                  ["reset-5h-Work", "reset-7d-Work"])
+            equal(ProfileStore.staleResetAlerts(pending, profile: "Work-2", keep: []), ["reset-5h-Work-2"])
+            equal(ProfileStore.resetAlertID(tag: "30d", profile: "Gpt Free"), "reset-30d-Gpt Free")
+        }
+
+        test("Links: each app's links only go to its own profiles") {
+            let s = ProfileStore(live: false)
+            s.profiles = [Profile(name: "C1", dataDir: "/tmp/C1", colorName: "blue"),
+                          Profile(name: "G1", dataDir: "/tmp/G1", colorName: "blue", providerID: "chatgpt"),
+                          Profile(name: "C2", dataDir: "/tmp/C2", colorName: "blue")]
+            equal(s.linkTargets(for: URL(string: "claude://login/x?token=t")!).map(\.name), ["C1", "C2"])
+            equal(s.linkTargets(for: URL(string: "CLAUDE://x")!).map(\.name), ["C1", "C2"])
+            equal(s.linkTargets(for: URL(string: "codex://connector/oauth_callback?code=c")!).map(\.name), ["G1"])
+            equal(s.linkTargets(for: URL(string: "https://chatgpt.com")!).map(\.name), [])
+            equal(ProfileStore.provider(forLink: URL(string: "codex://threads/1")!)?.id, "chatgpt")
+            equal(ProfileStore.provider(forLink: URL(string: "lanes://open")!)?.id, nil)
+            expect(ProfileStore.linkHint(Providers.chatgpt) != ProfileStore.linkHint(Providers.claude))
+        }
+
+        test("Window timings come out exactly as Claude's old constants") {
+            let five = WindowTiming(window: ClaudeLimit.fiveHourWindow)
+            let week = WindowTiming(window: ClaudeLimit.sevenDayWindow)
+            // Forecast lookback and minimum history: 1 h / 15 min, 1 day / 3 h.
+            equal([five.lookback, five.minSpan], [3600, 15 * 60])
+            equal([week.lookback, week.minSpan], [86400, 3 * 3600])
+            // Pace alerts: within 45 min with 15 to spare, within a day with 6 h to spare.
+            equal([five.paceSoon, five.paceSpare], [45 * 60, 15 * 60])
+            equal([week.paceSoon, week.paceSpare], [86400, 6 * 3600])
+            // Other windows scale between and beyond, in order.
+            let day = WindowTiming(window: 86400), month = WindowTiming(window: 30 * 86400)
+            for (lo, mid, hi) in [(five.lookback, day.lookback, week.lookback), (five.minSpan, day.minSpan, week.minSpan),
+                                  (five.paceSoon, day.paceSoon, week.paceSoon), (five.paceSpare, day.paceSpare, week.paceSpare)] {
+                expect(lo < mid && mid < hi, "\(lo) < \(mid) < \(hi)")
+            }
+            expect(month.lookback > week.lookback && month.minSpan > week.minSpan)
+            expect(month.minSpan < month.lookback && month.paceSpare < month.paceSoon)
+        }
+
+        test("Forecast and pace alerts per limit match the old fixed rules") {
+            let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+            // The per-limit forecast is the old call with the old constants.
+            let cases: [(UsageLimit, TimeInterval, TimeInterval)] = [
+                (ClaudeLimit.fiveHour(30, reset: t0 + 7200), 3600, 900),
+                (ClaudeLimit.sevenDay(30, reset: t0 + 3 * 86400), 86400, 10800)]
+            for (l, lookback, minSpan) in cases {
+                for ago: TimeInterval in [600, 900, 1800, 3600, 3 * 3600, 6 * 3600, 86400, 2 * 86400] {
+                    let samples: [(Date, Double)] = [(t0 - ago, 10)]
+                    equal(Forecast.pace(l, samples: samples, now: t0),
+                          Forecast.pace(value: l.used, reset: l.reset, window: l.window, samples: samples,
+                                        lookback: lookback, minSpan: minSpan, now: t0))
+                }
+            }
+            // 5 hours: runs out within 45 min, at least 15 min before the reset.
+            let five = ClaudeLimit.fiveHour(50, reset: nil)
+            func due(_ l: UsageLimit, out: TimeInterval, reset: TimeInterval) -> Bool {
+                ProfileStore.paceAlertDue(l, runsOut: t0 + out, reset: t0 + reset, now: t0)
+            }
+            expect(due(five, out: 45 * 60, reset: 60 * 60))
+            expect(!due(five, out: 45 * 60 + 1, reset: 2 * 3600))
+            expect(!due(five, out: 30 * 60, reset: 30 * 60 + 14 * 60))
+            // A week: within a day, at least 6 h before the reset.
+            let week = ClaudeLimit.sevenDay(50, reset: nil)
+            expect(due(week, out: 86400, reset: 86400 + 6 * 3600))
+            expect(!due(week, out: 86400 + 1, reset: 3 * 86400))
+            expect(!due(week, out: 3600, reset: 3600 + 6 * 3600 - 1))
+        }
+
+        test("Limit tags keep naming the alert state as before") {
+            equal(UsageLimit.window(ofTag: "5h"), 5 * 3600)
+            equal(UsageLimit.window(ofTag: "7d"), 7 * 86400)
+            equal(UsageLimit.window(ofTag: "90m"), 90 * 60)
+            equal(UsageLimit.window(ofTag: ""), nil)
+            equal(UsageLimit.window(ofTag: "xh"), nil)
+            equal(UsageLimit(key: "k", label: "", used: nil, reset: nil, window: 90 * 60).noun, "90-minute limit")
+            // Muting from a notification uses that limit's window.
+            let s = ProfileStore(live: false)
+            s.alertMutedUntil = [:]
+            let month: TimeInterval = 30 * 86400
+            s.usage = ["Free": Usage(limits: [UsageLimit(key: "p", label: "30 days", used: 90, reset: nil, window: month)])]
+            let before = Date()
+            s.handleNotification(action: AlertAction.mute, info: ["profile": "Free", "limit": "30d"])
+            expect((s.alertMutedUntil["Free/30d"] ?? 0) >= before.addingTimeInterval(month).timeIntervalSince1970)
+            s.alertMutedUntil = [:]
+        }
+
+        test("merge: an app's own record keeps its own reset times") {
+            let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+            let failed = Usage(error: "HTTP 500")
+            let l = UsageLimit(key: "p", label: "30 days", used: 33, reset: t0 + 86400, window: 30 * 86400)
+            let u = ProfileStore.merge(fresh: failed, previous: nil, previousAt: nil,
+                                       local: LocalReading(t: t0 - 60, limits: [l]), now: t0)
+            equal(u.primary?.used, 33)
+            equal(u.primary?.reset, t0 + 86400)
+            expect(u.fromLocalRecord)
+        }
+
+        test("merge: a record's limit whose own reset has passed starts over at 0") {
+            let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+            let five = UsageLimit(key: "primary", label: "5 hours", used: 80, reset: t0 - 60, window: 18000)
+            let week = UsageLimit(key: "secondary", label: "Week", used: 40, reset: t0 + 86400, window: 604800)
+            let u = ProfileStore.merge(fresh: Usage(error: "HTTP 500"), previous: nil, previousAt: nil,
+                                       local: LocalReading(t: t0 - 600, limits: [five, week]), now: t0)
+            equal(u.limit("primary")?.used, 0)
+            equal(u.limit("primary")?.reset, nil)
+            equal(u.limit("secondary")?.used, 40)
+            equal(u.limit("secondary")?.reset, t0 + 86400)
+            // Claude's record has no reset times of its own: its numbers stay.
+            let claude = ProfileStore.merge(fresh: Usage(error: "HTTP 500"), previous: nil, previousAt: nil,
+                                            local: LocalReading(t: t0 - 600, limits: [ClaudeLimit.fiveHour(80, reset: nil)]), now: t0)
+            equal(claude.primary?.used, 80)
         }
 
         test("UsageHistory keeps one reading per ~10 minutes, for 30 days") {
@@ -338,6 +794,10 @@ enum UnitTests {
             equal(h["Gone"] == nil, true)
             let csv = UsageHistory.csv([UsageSample(t: Date(timeIntervalSince1970: 0), h: 12.5, w: nil)])
             equal(csv, "time,five_hour,weekly\n1970-01-01T00:00:00Z,12.5,\n")
+            // A ChatGPT Free profile's 30-day limit isn't called five_hour.
+            let free = UsageHistory.csv([UsageSample(t: Date(timeIntervalSince1970: 0), h: 12.5, w: 3),
+                                         UsageSample(t: Date(timeIntervalSince1970: 600), h: 40, w: nil, hWindow: 30 * 86400)])
+            equal(free, "time,limit1,window1,limit2,window2\n1970-01-01T00:00:00Z,12.5,5h,3,7d\n1970-01-01T00:10:00Z,40,30d,,\n")
         }
 
         // MARK: best profile
@@ -384,10 +844,10 @@ enum UnitTests {
             expect(!s.isMuted("Work/5h", now: reset.addingTimeInterval(1)))
             // No reset known (or already past): one whole window.
             let now = Date()
-            s.mute("Work/7d", until: now.addingTimeInterval(-10), window: LimitWindow.week, now: now)
-            equal(s.alertMutedUntil["Work/7d"], now.addingTimeInterval(LimitWindow.week).timeIntervalSince1970)
+            s.mute("Work/7d", until: now.addingTimeInterval(-10), window: ClaudeLimit.sevenDayWindow, now: now)
+            equal(s.alertMutedUntil["Work/7d"], now.addingTimeInterval(ClaudeLimit.sevenDayWindow).timeIntervalSince1970)
             // Expired mutes are dropped.
-            s.mute("Studio/5h", until: nil, window: 60, now: now.addingTimeInterval(LimitWindow.week + 1))
+            s.mute("Studio/5h", until: nil, window: 60, now: now.addingTimeInterval(ClaudeLimit.sevenDayWindow + 1))
             equal(s.alertMutedUntil["Work/7d"], nil)
             s.alertMutedUntil = [:]
         }

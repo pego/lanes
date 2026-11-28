@@ -3,10 +3,31 @@
 import Foundation
 
 // One usage reading. Short keys: the file holds a week of them per profile.
+// It keeps a profile's first two limits (Usage.primary, .secondary), named
+// after Claude's; hw and ww are their windows in seconds, written only when
+// they aren't Claude's (5 hours, a week), so Claude's readings stay as they
+// were.
 struct UsageSample: Codable, Equatable {
     var t: Date
-    var h: Double?   // 5-hour %
-    var w: Double?   // weekly %
+    var h: Double?   // 5-hour % (the first limit)
+    var w: Double?   // weekly % (the second)
+    var hw: Double? = nil
+    var ww: Double? = nil
+
+    init(t: Date, h: Double?, w: Double?, hWindow: TimeInterval? = nil, wWindow: TimeInterval? = nil) {
+        self.t = t
+        self.h = h
+        self.w = w
+        hw = hWindow == ClaudeLimit.fiveHourWindow ? nil : hWindow
+        ww = wWindow == ClaudeLimit.sevenDayWindow ? nil : wWindow
+    }
+
+    // The reading of the profile's limit at `index` (in Usage.limits).
+    func value(at index: Int) -> Double? { index == 0 ? h : index == 1 ? w : nil }
+    // How long that limit's window ran when this was read.
+    func window(at index: Int) -> TimeInterval? {
+        index == 0 ? hw ?? ClaudeLimit.fiveHourWindow : index == 1 ? ww ?? ClaudeLimit.sevenDayWindow : nil
+    }
 }
 
 // 30 days of readings per profile in usage-history.json, at most one every
@@ -43,20 +64,71 @@ enum UsageHistory {
     }
 
     // time,five_hour,weekly: ISO 8601 UTC times, empty when unknown.
-    // Same columns as `lanes history`, minus the profile.
+    // Readings on other windows than Claude's (a ChatGPT plan) name each
+    // limit's window instead: time,limit1,window1,limit2,window2, with tags
+    // like "30d". Same columns as `lanes history`, minus the profile.
     static func csv(_ samples: [UsageSample]) -> String {
         let f = ISO8601DateFormatter()
         func n(_ v: Double?) -> String { v.map { String(format: "%g", $0) } ?? "" }
-        return "time,five_hour,weekly\n" + samples.map { "\(f.string(from: $0.t)),\(n($0.h)),\(n($0.w))\n" }.joined()
+        guard samples.contains(where: { $0.hw != nil || $0.ww != nil }) else {
+            return "time,five_hour,weekly\n" + samples.map { "\(f.string(from: $0.t)),\(n($0.h)),\(n($0.w))\n" }.joined()
+        }
+        func tag(_ s: UsageSample, _ i: Int) -> String {
+            guard s.value(at: i) != nil, let w = s.window(at: i) else { return "" }
+            let sp = UsageLimit.span(w)
+            return "\(sp.n)\(sp.unit)"
+        }
+        return "time,limit1,window1,limit2,window2\n" + samples.map {
+            "\(f.string(from: $0.t)),\(n($0.h)),\(tag($0, 0)),\(n($0.w)),\(tag($0, 1))\n"
+        }.joined()
     }
 }
 
+// The times that depend on how long a limit's window runs: how far back the
+// forecast looks and how much history it needs, and how early a pace alert
+// fires. Tuned by hand on Claude's two windows, 5 hours and a week; any
+// other length gets a value between (or beyond) those two, interpolated on
+// a log scale, so Claude's come out exactly as tuned.
+struct WindowTiming {
+    let window: TimeInterval
+
+    static let short: TimeInterval = 5 * 3600
+    static let long: TimeInterval = 7 * 86400
+
+    // `atShort` for a 5-hour window, `atLong` for a week.
+    static func scaled(_ window: TimeInterval, atShort: TimeInterval, atLong: TimeInterval) -> TimeInterval {
+        if window == short { return atShort }
+        if window == long { return atLong }
+        guard window > 0 else { return atShort }
+        let t = log(window / short) / log(long / short)
+        return (atShort * pow(atLong / atShort, t)).rounded()
+    }
+
+    // The forecast's rate is measured over this much of the recent past…
+    var lookback: TimeInterval { Self.scaled(window, atShort: 3600, atLong: 86400) }
+    // …from a reading at least this old.
+    var minSpan: TimeInterval { Self.scaled(window, atShort: 15 * 60, atLong: 3 * 3600) }
+    // A pace alert fires when the limit runs out within this…
+    var paceSoon: TimeInterval { Self.scaled(window, atShort: 45 * 60, atLong: 86400) }
+    // …and at least this long before it resets.
+    var paceSpare: TimeInterval { Self.scaled(window, atShort: 15 * 60, atLong: 6 * 3600) }
+}
+
+extension UsageLimit {
+    var timing: WindowTiming { WindowTiming(window: window) }
+}
+
 // Where a limit is heading: its rate over the recent past (the last hour for
-// the 5-hour limit, the last day for the weekly one), but only within the
-// current window, so the drop at the last reset never counts. Needs a
-// reading at least `minSpan` old to say anything. Usage that went down
-// (a reset the readings straddle) counts as no usage.
+// the 5-hour limit, the last day for the weekly one; see WindowTiming), but
+// only within the current window, so the drop at the last reset never
+// counts. Needs a reading at least `minSpan` old to say anything. Usage that
+// went down (a reset the readings straddle) counts as no usage.
 enum Forecast {
+    static func pace(_ limit: UsageLimit, samples: [(Date, Double)], now: Date = Date()) -> Pace? {
+        pace(value: limit.used, reset: limit.reset, window: limit.window, samples: samples,
+             lookback: limit.timing.lookback, minSpan: limit.timing.minSpan, now: now)
+    }
+
     static func pace(value: Double?, reset: Date?, window: TimeInterval, samples: [(Date, Double)],
                      lookback: TimeInterval, minSpan: TimeInterval, now: Date = Date()) -> Pace? {
         guard let value, let reset, value < 100 else { return nil }
