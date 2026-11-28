@@ -100,28 +100,35 @@ struct MenuPanel: View {
                     .padding(.horizontal, 10)
                     .padding(.bottom, 6)
             }
-            if let best = store.roomiestProfile() {
+            // One card per app with a choice; named only when there's more
+            // than one. ⌥⌘B opens Claude's best, so only its card shows it.
+            let cards = store.roomiestPerProvider
+            ForEach(cards) { best in
                 RoomiestCard(profile: best,
                              running: store.running.contains(best.id),
                              usage: store.usage[best.id],
-                             shortcut: store.bestShortcutEnabled) {
+                             shortcut: store.bestShortcutEnabled && best.providerID == Providers.claude.id,
+                             appName: cards.count > 1 ? best.provider.name : nil) {
                     store.launch(best); closePanel()
                 }
                 .padding(.horizontal, 10)
                 .padding(.bottom, 6)
             }
+            // Grouped by app, under its name, once there's more than one.
+            let groups = store.profilesByProvider
             VStack(spacing: 0) {
-                ForEach(Array(store.profiles.enumerated()), id: \.element.id) { i, p in
-                    if i > 0 { LaneMarking().padding(.horizontal, 12) }
-                    PanelLane(
-                        profile: p,
-                        running: store.running.contains(p.id),
-                        usage: store.usage[p.id],
-                        launch: { store.launch(p); closePanel() },
-                        reveal: { store.revealData(p) },
-                        setColor: p.isDefault ? nil : { store.setColor(p, color: $0) },
-                        remove: p.isDefault ? nil : { store.removeRequest = p; show("main") }
-                    )
+                ForEach(groups, id: \.provider.id) { group in
+                    if groups.count > 1 {
+                        SectionLabel(group.provider.name)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.leading, 12)
+                            .padding(.top, group.provider.id == groups[0].provider.id ? 2 : 10)
+                            .padding(.bottom, 2)
+                    }
+                    ForEach(Array(group.profiles.enumerated()), id: \.element.id) { i, p in
+                        if i > 0 { LaneMarking().padding(.horizontal, 12) }
+                        lane(p)
+                    }
                 }
             }
             .padding(.horizontal, 4)
@@ -241,6 +248,18 @@ struct MenuPanel: View {
         .overlay(alignment: .top) { Divider() }
     }
 
+    private func lane(_ p: Profile) -> some View {
+        PanelLane(
+            profile: p,
+            running: store.running.contains(p.id),
+            usage: store.usage[p.id],
+            launch: { store.launch(p); closePanel() },
+            reveal: { store.revealData(p) },
+            setColor: p.isDefault ? nil : { store.setColor(p, color: $0) },
+            remove: p.isDefault ? nil : { store.removeRequest = p; show("main") }
+        )
+    }
+
     private func closePanel() { NSApp.keyWindow?.orderOut(nil) }
 
     private func show(_ id: String) {
@@ -250,12 +269,14 @@ struct MenuPanel: View {
     }
 }
 
-// The lane with the most 5-hour headroom, and a one-click way into it.
+// The lane with the most headroom in its first limit (Claude's 5-hour one), and a one-click way into it.
 struct RoomiestCard: View {
     let profile: Profile
     let running: Bool
     let usage: Usage?
     let shortcut: Bool
+    // With more than one card, the app it's for: "MOST ROOM · CHATGPT".
+    var appName: String? = nil
     let open: () -> Void
 
     private var tint: Color { profile.color.swatch }
@@ -266,7 +287,7 @@ struct RoomiestCard: View {
         HStack(spacing: 12) {
             TintedClaudeIcon(color: profile.color, size: 34, provider: profile.provider)
             VStack(alignment: .leading, spacing: 2) {
-                Text("MOST ROOM")
+                Text(appName.map { "MOST ROOM · \($0.uppercased())" } ?? "MOST ROOM")
                     .font(.system(size: 9, weight: .bold))
                     .tracking(0.8)
                     .foregroundStyle(tint)
