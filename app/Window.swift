@@ -756,7 +756,7 @@ struct AddSheet: View {
                     ColorSwatches(selected: colorName, size: 22) { colorName = $0 }
                 }
                 Label {
-                    Text(provider.linkScheme == nil
+                    Text(provider.id != Providers.claude.id
                          ? "It starts empty and signs in on its own. Sign-in comes back to the \(provider.name) that started it, so sign in one profile at a time."
                          : routesLinks
                          ? "It starts empty and signs in on its own. When you log in, Lanes hands the sign-in link back to this profile, even with others open."

@@ -112,6 +112,7 @@ check "widget is a WidgetKit extension" test "$(/usr/libexec/PlistBuddy -c 'Prin
 check "widget enters at NSExtensionMain" sh -c '"$1" 2>&1 | grep -q "XPC Service cannot be run directly"' _ "$WIDGET/Contents/MacOS/LanesWidget"
 check "widget is sandboxed" sh -c 'codesign -d --entitlements - "$1" 2>/dev/null | grep -q com.apple.security.app-sandbox' _ "$WIDGET"
 check "signature verifies" codesign --verify --deep --strict "$APP"
+check "Info.plist claims claude:// and codex://" sh -c '/usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes" "$1/Contents/Info.plist" | grep -q "claude" && /usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes" "$1/Contents/Info.plist" | grep -q "codex"' _ "$APP"
 check "Info.plist version is $version" test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$version"
 check "bundled lanes is bin/lanes" cmp bin/lanes "$APP/Contents/Resources/lanes"
 check "app has its icon" cmp app/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"

@@ -409,8 +409,8 @@ enum UnitTests {
             equal(g.bundleID, "com.openai.codex")
             equal(g.configEnv, "CODEX_HOME")
             equal(g.configSubdir, "codex-home")
-            equal(g.linkScheme, nil)
-            equal(g.probeURL, nil)
+            equal(g.linkScheme, "codex")
+            equal(g.probeURL, URL(string: "codex://"))
             equal(g.keychainItem, nil)
             equal(g.appCandidates, ["/Applications/ChatGPT.app", NSHomeDirectory() + "/Applications/ChatGPT.app"])
             equal(g.clonePath(in: "/c", profile: "Work"), "/c/ChatGPT Work.app")
@@ -671,14 +671,18 @@ enum UnitTests {
             equal(ProfileStore.resetAlertID(tag: "30d", profile: "Gpt Free"), "reset-30d-Gpt Free")
         }
 
-        test("Links: a claude:// link only goes to Claude profiles") {
+        test("Links: each app's links only go to its own profiles") {
             let s = ProfileStore(live: false)
             s.profiles = [Profile(name: "C1", dataDir: "/tmp/C1", colorName: "blue"),
                           Profile(name: "G1", dataDir: "/tmp/G1", colorName: "blue", providerID: "chatgpt"),
                           Profile(name: "C2", dataDir: "/tmp/C2", colorName: "blue")]
             equal(s.linkTargets(for: URL(string: "claude://login/x?token=t")!).map(\.name), ["C1", "C2"])
             equal(s.linkTargets(for: URL(string: "CLAUDE://x")!).map(\.name), ["C1", "C2"])
-            equal(s.linkTargets(for: URL(string: "codex://x")!).map(\.name), [])
+            equal(s.linkTargets(for: URL(string: "codex://connector/oauth_callback?code=c")!).map(\.name), ["G1"])
+            equal(s.linkTargets(for: URL(string: "https://chatgpt.com")!).map(\.name), [])
+            equal(ProfileStore.provider(forLink: URL(string: "codex://threads/1")!)?.id, "chatgpt")
+            equal(ProfileStore.provider(forLink: URL(string: "lanes://open")!)?.id, nil)
+            expect(ProfileStore.linkHint(Providers.chatgpt) != ProfileStore.linkHint(Providers.claude))
         }
 
         test("Window timings come out exactly as Claude's old constants") {

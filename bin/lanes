@@ -1689,6 +1689,10 @@ build_manager_app() {
 			<key>CFBundleURLSchemes</key><array><string>claude</string></array>
 		</dict>
 		<dict>
+			<key>CFBundleURLName</key><string>ChatGPT links</string>
+			<key>CFBundleURLSchemes</key><array><string>codex</string></array>
+		</dict>
+		<dict>
 			<key>CFBundleURLName</key><string>Lanes</string>
 			<key>CFBundleURLSchemes</key><array><string>lanes</string></array>
 		</dict>

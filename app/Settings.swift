@@ -99,8 +99,9 @@ struct SettingsView: View {
         }
         Section {
             Toggle(isOn: $store.routeLinks) {
-                described("Send claude:// links to the right profile",
-                          "Sign-in and “open in app” links go to the profile they belong to. Off, macOS hands them to whichever Claude is running.")
+                described(Providers.chatgpt.isInstalled ? "Send claude:// and codex:// links to the right profile"
+                                                        : "Send claude:// links to the right profile",
+                          "Sign-in, app-connection and “open in app” links go to the profile they belong to. Off, macOS hands them to whichever copy of the app is running.")
             }
         } footer: {
             HStack(alignment: .top) {

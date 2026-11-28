@@ -106,25 +106,22 @@ extension ProfileStore {
         case .unknown:
             break
         }
-        if routeLinks, let scheme = claude.linkScheme {
-            out.append(handlesLinks
-                       ? HealthCheck(id: "links", status: .ok, title: "\(scheme):// links go through Lanes")
-                       : HealthCheck(id: "links", status: .warn, title: "\(scheme):// links bypass Lanes",
-                                     detail: "Another app took them over; sign-in links may open in the wrong profile.",
-                                     fix: "claim-links"))
+        if routeLinks {
+            for provider in routedProviders {
+                guard let scheme = provider.linkScheme else { continue }
+                let id = provider.id == claude.id ? "links" : "links-\(provider.id)"
+                out.append(handlesLinks(of: provider)
+                           ? HealthCheck(id: id, status: .ok, title: "\(scheme):// links go through Lanes")
+                           : HealthCheck(id: id, status: .warn, title: "\(scheme):// links bypass Lanes",
+                                         detail: "Another app took them over; \(provider.id == claude.id ? "sign-in" : provider.name) links may open in the wrong profile.",
+                                         fix: "claim-links"))
+            }
         }
         if !launchAtLogin {
             out.append(HealthCheck(id: "login", status: .warn, title: "Lanes doesn't open at login",
                                    detail: "Until you open it, usage, alerts and link routing are off.", fix: "login"))
         }
         return out
-    }
-
-    // Whether macOS hands claude:// links to this app.
-    var handlesLinks: Bool {
-        guard let probe = Providers.claude.probeURL,
-              let cur = NSWorkspace.shared.urlForApplication(toOpen: probe) else { return false }
-        return Bundle(url: cur)?.bundleIdentifier == Bundle.main.bundleIdentifier
     }
 
     func fix(_ action: String) {
@@ -143,7 +140,7 @@ extension ProfileStore {
             ChromiumKey.reset()
             refreshUsage()
         case "claim-links":
-            lastClaim = nil
+            lastClaim = [:]
             claimLinksIfNeeded()
         case "login": setLaunchAtLogin(true)
         default:

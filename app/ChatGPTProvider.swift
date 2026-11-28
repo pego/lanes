@@ -28,9 +28,9 @@ struct ChatGPTProvider: Provider {
     let configEnv = "CODEX_HOME"
     let configSubdir = "codex-home"
     // Sign-in comes back to the instance that started it through a localhost
-    // callback; codex:// links aren't routed (a click goes to whichever
-    // ChatGPT macOS picks).
-    let linkScheme: String? = nil
+    // callback, but connecting an app (codex://connector/oauth_callback) and
+    // "open in app" links come as codex://, which Lanes routes like Claude's.
+    let linkScheme: String? = "codex"
     let updater = UpdaterKind.sparkle
     let iconStyle = IconStyle.tintedPlate
     var defaultDataDir: String { NSHomeDirectory() + "/Library/Application Support/Codex" }

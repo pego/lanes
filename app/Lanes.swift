@@ -372,19 +372,21 @@ final class ProfileStore: ObservableObject {
         catch { errorMessage = error.localizedDescription }
     }
 
-    // MARK: claude:// link routing state (the routing itself: Store+Links.swift)
+    // MARK: claude:// and codex:// link routing state (the routing itself: Store+Links.swift)
 
     @Published var routeLinks = UserDefaults.standard.object(forKey: "routeLinks") as? Bool ?? true {
         didSet {
             UserDefaults.standard.set(routeLinks, forKey: "routeLinks")
-            lastClaim = nil
+            lastClaim = [:]
             if routeLinks { claimLinksIfNeeded() } else { releaseLinks() }
         }
     }
-    // The profile whose Claude window was frontmost most recently: the one
-    // that just opened the browser to sign in, so it's the picker's default.
-    var lastActive: String?
-    var lastClaim: Date?
+    // Per provider, the profile whose window was frontmost most recently:
+    // the one that just opened the browser to sign in, so it's the picker's
+    // default.
+    var lastActive: [String: String] = [:]
+    // When each scheme was last claimed.
+    var lastClaim: [String: Date] = [:]
     var activationObserver: NSObjectProtocol?
 }
 
@@ -420,7 +422,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
-        guard url.scheme?.lowercased() == "claude" else { return }
+        guard ProfileStore.provider(forLink: url) != nil else { return }
         // Let the Apple Event return before the (modal) picker runs.
         DispatchQueue.main.async { ProfileStore.shared.route(url) }
     }
