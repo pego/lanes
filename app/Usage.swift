@@ -33,6 +33,9 @@ struct Usage: Equatable {
     // history).
     var primary: UsageLimit? { limits.first }
     var secondary: UsageLimit? { limits.count > 1 ? limits[1] : nil }
+    // The limit with the shortest window (Claude's 5-hour one, a ChatGPT
+    // plan's 5-hour or 30-day one): what the menu bar glyph shows.
+    var shortest: UsageLimit? { limits.min { $0.window < $1.window } }
 
     func limit(_ key: String) -> UsageLimit? { limits.first { $0.key == key } }
 }

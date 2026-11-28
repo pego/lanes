@@ -658,6 +658,23 @@ enum UnitTests {
             equal(s.bestToLaunch?.name, nil)
         }
 
+        test("Menu bar: each lane's shortest limit, named honestly") {
+            let now = Date()
+            let claude = Usage(fiveHour: 41, sevenDay: 95)
+            let monthly = Usage(limits: [UsageLimit(key: "primary", label: "30 days", used: 60, reset: now + 86400, window: 30 * 86400)])
+            let plus = Usage(limits: [UsageLimit(key: "secondary", label: "Week", used: 80, reset: now + 86400, window: 604800),
+                                      UsageLimit(key: "primary", label: "5 hours", used: 20, reset: now + 3600, window: 18000)])
+            equal(plus.shortest?.key, "primary")
+            // Claude only: the text it has always had.
+            equal(MenuBarGlyph.image([claude, nil, Usage(error: "not signed in")]).accessibilityDescription,
+                  "Lanes: busiest profile at 41% of its 5-hour limit")
+            equal(MenuBarGlyph.image([]).accessibilityDescription, "Lanes")
+            equal(MenuBarGlyph.image([claude, monthly]).accessibilityDescription,
+                  "Lanes: busiest profile at 60% of its 30-day limit")
+            equal(MenuBarGlyph.image([claude, plus]).accessibilityDescription,
+                  "Lanes: busiest profile at 41% of its 5-hour limit")
+        }
+
         test("Reset alerts: one the usage no longer has is cancelled") {
             let pending = ["reset-5h-Work", "reset-7d-Work", "reset-30d-Work", "reset-5h-Work-2",
                            "reset-5h-Personal", "whats-new", "x-reset-5h-Work"]

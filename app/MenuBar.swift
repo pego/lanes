@@ -1,6 +1,6 @@
 // The menu bar: a glyph of stacked lanes (one bar per profile, filled to
-// its 5-hour usage), and the panel it opens, which leads with the lane
-// that has the most room.
+// its shortest limit's usage: Claude's 5-hour one), and the panel it opens,
+// which leads with the lane that has the most room.
 
 import SwiftUI
 import AppKit
@@ -10,11 +10,7 @@ struct MenuBarLabel: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        let values = store.profiles.map { p -> Double? in
-            guard let u = store.usage[p.id], u.error == nil else { return nil }
-            return u.primary?.used
-        }
-        Image(nsImage: MenuBarGlyph.image(levels: values, percent: values.compactMap { $0 }.max()))
+        Image(nsImage: MenuBarGlyph.image(store.profiles.map { store.usage[$0.id] }))
             // Always on screen, so it opens Settings for AppKit windows.
             .onChange(of: store.settingsRequest) { _ in openWindow(id: "settings") }
     }
@@ -23,10 +19,20 @@ struct MenuBarLabel: View {
 enum MenuBarGlyph {
     static let maxLanes = 3
 
+    // One lane per profile, filled to its shortest limit (nil when there's
+    // no reading); the percentage is the busiest of those.
+    static func image(_ usages: [Usage?]) -> NSImage {
+        let limits = usages.map { u -> UsageLimit? in u?.error == nil ? u?.shortest : nil }
+        let busiest = limits.compactMap { $0 }.filter { $0.used != nil }.max { $0.used! < $1.used! }
+        return image(levels: limits.map { $0?.used }, percent: busiest?.used, limitNoun: busiest?.noun ?? "5-hour limit")
+    }
+
     // Up to three lanes, keeping the profiles' order; with more profiles, the
     // three busiest. A template image that follows the menu bar's tint, except
-    // near a limit, when it turns orange (75%) or red (90%).
-    static func image(levels: [Double?], percent: Double?) -> NSImage {
+    // near a limit, when it turns orange (75%) or red (90%). The percentage is
+    // the busiest profile's, of its own shortest limit, which limitNoun names
+    // for VoiceOver ("5-hour limit", "30-day limit").
+    static func image(levels: [Double?], percent: Double?, limitNoun: String = "5-hour limit") -> NSImage {
         var lanes = levels
         if lanes.count > maxLanes {
             let keep = lanes.indices.sorted { (lanes[$0] ?? -1) > (lanes[$1] ?? -1) }.prefix(maxLanes).sorted()
@@ -75,7 +81,7 @@ enum MenuBarGlyph {
             return true
         }
         img.isTemplate = warn == nil
-        img.accessibilityDescription = percent.map { "Lanes: busiest profile at \(Int($0.rounded()))% of its 5-hour limit" } ?? "Lanes"
+        img.accessibilityDescription = percent.map { "Lanes: busiest profile at \(Int($0.rounded()))% of its \(limitNoun)" } ?? "Lanes"
         return img
     }
 }
