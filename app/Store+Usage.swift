@@ -220,6 +220,29 @@ extension ProfileStore {
         return withData.count >= 2 ? bestProfile(provider: provider) : nil
     }
 
+    // ChatGPT is on this Mac or has a profile here: the texts that name the
+    // services Lanes talks to name chatgpt.com too.
+    var involvesChatGPT: Bool {
+        Providers.chatgpt.isInstalled || profiles.contains { $0.providerID == Providers.chatgpt.id }
+    }
+
+    // The "most room" cards: one per app that has a real choice, in the
+    // apps' order. Claude-only, that's roomiestProfile().
+    var roomiestPerProvider: [Profile] {
+        Providers.all.compactMap { roomiestProfile(provider: $0.id) }
+    }
+
+    // The profiles by app, keeping their order within each: known apps in
+    // Providers.all's order, then any a newer Lanes added, as they appear.
+    var profilesByProvider: [(provider: any Provider, profiles: [Profile])] {
+        var ids = Providers.all.map(\.id)
+        for p in profiles where !ids.contains(p.providerID) { ids.append(p.providerID) }
+        return ids.compactMap { id in
+            let group = profiles.filter { $0.providerID == id }
+            return group.isEmpty ? nil : (Providers.named(id), group)
+        }
+    }
+
     // "3 profiles · 1 running · most room in Work (92% left)"
     var summary: String {
         let n = profiles.count, r = running.count

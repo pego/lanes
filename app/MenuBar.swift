@@ -1,6 +1,6 @@
 // The menu bar: a glyph of stacked lanes (one bar per profile, filled to
-// its 5-hour usage), and the panel it opens, which leads with the lane
-// that has the most room.
+// its shortest limit's usage: Claude's 5-hour one), and the panel it opens,
+// which leads with the lane that has the most room.
 
 import SwiftUI
 import AppKit
@@ -10,11 +10,7 @@ struct MenuBarLabel: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        let values = store.profiles.map { p -> Double? in
-            guard let u = store.usage[p.id], u.error == nil else { return nil }
-            return u.primary?.used
-        }
-        Image(nsImage: MenuBarGlyph.image(levels: values, percent: values.compactMap { $0 }.max()))
+        Image(nsImage: MenuBarGlyph.image(store.profiles.map { store.usage[$0.id] }))
             // Always on screen, so it opens Settings for AppKit windows.
             .onChange(of: store.settingsRequest) { _ in openWindow(id: "settings") }
     }
@@ -23,10 +19,20 @@ struct MenuBarLabel: View {
 enum MenuBarGlyph {
     static let maxLanes = 3
 
+    // One lane per profile, filled to its shortest limit (nil when there's
+    // no reading); the percentage is the busiest of those.
+    static func image(_ usages: [Usage?]) -> NSImage {
+        let limits = usages.map { u -> UsageLimit? in u?.error == nil ? u?.shortest : nil }
+        let busiest = limits.compactMap { $0 }.filter { $0.used != nil }.max { $0.used! < $1.used! }
+        return image(levels: limits.map { $0?.used }, percent: busiest?.used, limitNoun: busiest?.noun ?? "5-hour limit")
+    }
+
     // Up to three lanes, keeping the profiles' order; with more profiles, the
     // three busiest. A template image that follows the menu bar's tint, except
-    // near a limit, when it turns orange (75%) or red (90%).
-    static func image(levels: [Double?], percent: Double?) -> NSImage {
+    // near a limit, when it turns orange (75%) or red (90%). The percentage is
+    // the busiest profile's, of its own shortest limit, which limitNoun names
+    // for VoiceOver ("5-hour limit", "30-day limit").
+    static func image(levels: [Double?], percent: Double?, limitNoun: String = "5-hour limit") -> NSImage {
         var lanes = levels
         if lanes.count > maxLanes {
             let keep = lanes.indices.sorted { (lanes[$0] ?? -1) > (lanes[$1] ?? -1) }.prefix(maxLanes).sorted()
@@ -75,7 +81,7 @@ enum MenuBarGlyph {
             return true
         }
         img.isTemplate = warn == nil
-        img.accessibilityDescription = percent.map { "Lanes: busiest profile at \(Int($0.rounded()))% of its 5-hour limit" } ?? "Lanes"
+        img.accessibilityDescription = percent.map { "Lanes: busiest profile at \(Int($0.rounded()))% of its \(limitNoun)" } ?? "Lanes"
         return img
     }
 }
@@ -94,28 +100,35 @@ struct MenuPanel: View {
                     .padding(.horizontal, 10)
                     .padding(.bottom, 6)
             }
-            if let best = store.roomiestProfile() {
+            // One card per app with a choice; named only when there's more
+            // than one. ⌥⌘B opens Claude's best, so only its card shows it.
+            let cards = store.roomiestPerProvider
+            ForEach(cards) { best in
                 RoomiestCard(profile: best,
                              running: store.running.contains(best.id),
                              usage: store.usage[best.id],
-                             shortcut: store.bestShortcutEnabled) {
+                             shortcut: store.bestShortcutEnabled && best.providerID == Providers.claude.id,
+                             appName: cards.count > 1 ? best.provider.name : nil) {
                     store.launch(best); closePanel()
                 }
                 .padding(.horizontal, 10)
                 .padding(.bottom, 6)
             }
+            // Grouped by app, under its name, once there's more than one.
+            let groups = store.profilesByProvider
             VStack(spacing: 0) {
-                ForEach(Array(store.profiles.enumerated()), id: \.element.id) { i, p in
-                    if i > 0 { LaneMarking().padding(.horizontal, 12) }
-                    PanelLane(
-                        profile: p,
-                        running: store.running.contains(p.id),
-                        usage: store.usage[p.id],
-                        launch: { store.launch(p); closePanel() },
-                        reveal: { store.revealData(p) },
-                        setColor: p.isDefault ? nil : { store.setColor(p, color: $0) },
-                        remove: p.isDefault ? nil : { store.removeRequest = p; show("main") }
-                    )
+                ForEach(groups, id: \.provider.id) { group in
+                    if groups.count > 1 {
+                        SectionLabel(group.provider.name)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.leading, 12)
+                            .padding(.top, group.provider.id == groups[0].provider.id ? 2 : 10)
+                            .padding(.bottom, 2)
+                    }
+                    ForEach(Array(group.profiles.enumerated()), id: \.element.id) { i, p in
+                        if i > 0 { LaneMarking().padding(.horizontal, 12) }
+                        lane(p)
+                    }
                 }
             }
             .padding(.horizontal, 4)
@@ -235,6 +248,18 @@ struct MenuPanel: View {
         .overlay(alignment: .top) { Divider() }
     }
 
+    private func lane(_ p: Profile) -> some View {
+        PanelLane(
+            profile: p,
+            running: store.running.contains(p.id),
+            usage: store.usage[p.id],
+            launch: { store.launch(p); closePanel() },
+            reveal: { store.revealData(p) },
+            setColor: p.isDefault ? nil : { store.setColor(p, color: $0) },
+            remove: p.isDefault ? nil : { store.removeRequest = p; show("main") }
+        )
+    }
+
     private func closePanel() { NSApp.keyWindow?.orderOut(nil) }
 
     private func show(_ id: String) {
@@ -244,12 +269,14 @@ struct MenuPanel: View {
     }
 }
 
-// The lane with the most 5-hour headroom, and a one-click way into it.
+// The lane with the most headroom in its first limit (Claude's 5-hour one), and a one-click way into it.
 struct RoomiestCard: View {
     let profile: Profile
     let running: Bool
     let usage: Usage?
     let shortcut: Bool
+    // With more than one card, the app it's for: "MOST ROOM · CHATGPT".
+    var appName: String? = nil
     let open: () -> Void
 
     private var tint: Color { profile.color.swatch }
@@ -260,7 +287,7 @@ struct RoomiestCard: View {
         HStack(spacing: 12) {
             TintedClaudeIcon(color: profile.color, size: 34, provider: profile.provider)
             VStack(alignment: .leading, spacing: 2) {
-                Text("MOST ROOM")
+                Text(appName.map { "MOST ROOM · \($0.uppercased())" } ?? "MOST ROOM")
                     .font(.system(size: 9, weight: .bold))
                     .tracking(0.8)
                     .foregroundStyle(tint)

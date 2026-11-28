@@ -658,6 +658,54 @@ enum UnitTests {
             equal(s.bestToLaunch?.name, nil)
         }
 
+        test("Menu: a most-room card and a group per app, only once there's more than one app") {
+            let s = ProfileStore(live: false)
+            s.profiles = [Profile(name: "C1", dataDir: "/tmp/C1", colorName: "blue"),
+                          Profile(name: "G1", dataDir: "/tmp/G1", colorName: "blue", providerID: "chatgpt"),
+                          Profile(name: "C2", dataDir: "/tmp/C2", colorName: "blue"),
+                          Profile(name: "G2", dataDir: "/tmp/G2", colorName: "blue", providerID: "chatgpt"),
+                          Profile(name: "N1", dataDir: "/tmp/N1", colorName: "blue", providerID: "newer")]
+            s.usage = ["C1": Usage(fiveHour: 90, sevenDay: 10), "C2": Usage(fiveHour: 70, sevenDay: 10),
+                       "G1": Usage(fiveHour: 5, sevenDay: 10), "G2": Usage(fiveHour: 30, sevenDay: 10)]
+            equal(s.roomiestPerProvider.map(\.name), ["C2", "G1"])
+            equal(s.profilesByProvider.map(\.provider.id), ["claude", "chatgpt", "newer"])
+            equal(s.profilesByProvider.map { $0.profiles.map(\.name) }, [["C1", "C2"], ["G1", "G2"], ["N1"]])
+            // One ChatGPT lane with numbers: no choice there, so no card.
+            s.usage["G2"] = nil
+            equal(s.roomiestPerProvider.map(\.name), ["C2"])
+            // Claude only: one card, one group, as before.
+            s.profiles = s.profiles.filter { $0.providerID == "claude" }
+            equal(s.roomiestPerProvider.map(\.name), [s.roomiestProfile()?.name].compactMap { $0 })
+            equal(s.profilesByProvider.count, 1)
+            expect(s.profilesByProvider.first?.profiles == s.profiles)
+        }
+
+        test("Privacy note: names chatgpt.com once a ChatGPT profile exists") {
+            let s = ProfileStore(live: false)
+            s.profiles = [Profile(name: "C1", dataDir: "/tmp/C1", colorName: "blue")]
+            // Claude only: it follows whether ChatGPT is on this Mac.
+            equal(s.involvesChatGPT, Providers.chatgpt.isInstalled)
+            s.profiles.append(Profile(name: "G1", dataDir: "/tmp/G1", colorName: "blue", providerID: "chatgpt"))
+            expect(s.involvesChatGPT)
+        }
+
+        test("Menu bar: each lane's shortest limit, named honestly") {
+            let now = Date()
+            let claude = Usage(fiveHour: 41, sevenDay: 95)
+            let monthly = Usage(limits: [UsageLimit(key: "primary", label: "30 days", used: 60, reset: now + 86400, window: 30 * 86400)])
+            let plus = Usage(limits: [UsageLimit(key: "secondary", label: "Week", used: 80, reset: now + 86400, window: 604800),
+                                      UsageLimit(key: "primary", label: "5 hours", used: 20, reset: now + 3600, window: 18000)])
+            equal(plus.shortest?.key, "primary")
+            // Claude only: the text it has always had.
+            equal(MenuBarGlyph.image([claude, nil, Usage(error: "not signed in")]).accessibilityDescription,
+                  "Lanes: busiest profile at 41% of its 5-hour limit")
+            equal(MenuBarGlyph.image([]).accessibilityDescription, "Lanes")
+            equal(MenuBarGlyph.image([claude, monthly]).accessibilityDescription,
+                  "Lanes: busiest profile at 60% of its 30-day limit")
+            equal(MenuBarGlyph.image([claude, plus]).accessibilityDescription,
+                  "Lanes: busiest profile at 41% of its 5-hour limit")
+        }
+
         test("Reset alerts: one the usage no longer has is cancelled") {
             let pending = ["reset-5h-Work", "reset-7d-Work", "reset-30d-Work", "reset-5h-Work-2",
                            "reset-5h-Personal", "whats-new", "x-reset-5h-Work"]
